@@ -78,6 +78,11 @@ export default function HomePage() {
     ]);
   };
 
+  // For streaming progress we append lines without repeating the ">>> title" header.
+  const appendTerminalLine = (line: string) => {
+    setTerminalLines((prev) => [...prev, line]);
+  };
+
   // If the user previously uploaded/imported a DB, let them reuse it without re-uploading.
   // We only prompt on first load of the page.
   useEffect(() => {
@@ -321,7 +326,7 @@ export default function HomePage() {
       appendTerminal("Visualization push", ["Starting visualization push..."]);
       const dbName = openmrsDbName.trim();
       const shouldSkipEtl = Boolean(etlRanDbName && dbName && etlRanDbName === dbName);
-      const res = await fetch("/api/cbs/push-sample", {
+      const res = await fetch("/api/cbs/push-sample/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -331,24 +336,69 @@ export default function HomePage() {
           skipEtlRefresh: shouldSkipEtl
         })
       });
-      const data = await res.json();
-      const cbsStatus = (data as any)?.cbsStatus;
-      const cbsBody = (data as any)?.cbsBody;
+      const bodyStream = res.body;
+      if (!bodyStream) {
+        throw new Error("Visualization push stream not available.");
+      }
+
+      const reader = bodyStream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            // Ignore malformed partial lines
+            continue;
+          }
+          if (parsed?.type === "log") {
+            appendTerminalLine(String(parsed.line ?? ""));
+          }
+          if (parsed?.type === "done") {
+            finalResult = parsed.result;
+            break;
+          }
+        }
+
+        if (finalResult) break;
+      }
+
+      if (!finalResult) {
+        throw new Error("Visualization push did not return a final result from the stream.");
+      }
+
+      const cbsStatus = finalResult?.cbsStatus;
+      const cbsBody = finalResult?.cbsBody;
       let message =
-        (data as any)?.message ??
-        (res.ok ? "CBS push OK" : "CBS push failed");
-      if (!res.ok && cbsStatus != null) {
+        finalResult?.message ??
+        (finalResult?.ok ? "CBS push OK" : "CBS push failed");
+      if (!finalResult?.ok && cbsStatus != null) {
         message += ` (CBS HTTP ${cbsStatus})`;
       }
-      if (!res.ok && cbsBody != null) {
+      if (!finalResult?.ok && cbsBody != null) {
         message += `: ${String(cbsBody).slice(0, 300)}`;
       }
+
       setPushResult({
-        ok: res.ok,
+        ok: Boolean(finalResult?.ok),
         message,
-        details: data
+        details: finalResult
       });
-      appendTerminal("Visualization push", (data.log ?? []) as string[]);
+
+      // If ETL actually ran for this push, record it so preview->push doesn't refresh again.
+      if (!shouldSkipEtl && finalResult?.ok) setEtlRanDbName(dbName);
     } catch (e) {
       setPushResult({ ok: false, message: String(e) });
       appendTerminal("Visualization push failed", [String(e)]);
@@ -396,7 +446,11 @@ export default function HomePage() {
         details: data
       });
       appendTerminal("Visualization preview", (data.log ?? []) as string[]);
-      if (res.ok) setStep(3);
+      if (res.ok) {
+        // If preview was forced to refresh ETL, mark it so the subsequent push doesn't refresh again.
+        if (!shouldSkipEtl) setEtlRanDbName(dbName);
+        setStep(3);
+      }
       return res.ok;
     } catch (e) {
       setPreviewResult({ ok: false, message: String(e) });
@@ -472,6 +526,10 @@ export default function HomePage() {
         return;
       }
     }
+
+    // Preview generation for the currently-selected DB already ran ETL unless skipEtlRefresh was true.
+    // Setting this here avoids a second ETL refresh during push (which can trigger upstream 504s).
+    if (openmrsDbName.trim()) setEtlRanDbName(openmrsDbName.trim());
 
     await callPush();
     await callCaseSurveillancePush();
@@ -549,6 +607,8 @@ export default function HomePage() {
               setUploadProgress(0);
               setEtlRanDbName(null);
               setUploadResult(null);
+              clearTerminal();
+              appendTerminal("Upload & import", ["Starting upload transfer..."]);
               try {
                 const form = new FormData();
                 form.append("openmrsDump", openmrsFile);
@@ -561,10 +621,17 @@ export default function HomePage() {
                   xhr.upload.onprogress = (evt) => {
                     if (evt.lengthComputable) {
                       const pct = Math.round((evt.loaded / evt.total) * 100);
-                      setUploadProgress(pct);
+                      // Upload transfer reaches 100% quickly, but server-side import can take longer.
+                      // Cap at 95% during upload to avoid misleading the user.
+                      setUploadProgress(Math.min(95, pct));
                     }
                   };
+                  xhr.upload.onloadend = () => {
+                    setUploadProgress(95);
+                    appendTerminalLine("Upload transfer finished; importing dump on server (please wait)...");
+                  };
                   xhr.onload = () => {
+                    setUploadProgress(100);
                     const status = xhr.status;
                     const text = xhr.responseText ?? "";
                     let parsed: any = null;
@@ -595,8 +662,9 @@ export default function HomePage() {
                   } catch {
                     // localStorage may be blocked; ignore.
                   }
+                  appendTerminalLine("Server import finished. Detecting facility + MFL...");
                   setEtlRanDbName(null);
-                  clearTerminal();
+                  // Keep the import logs visible; next operations will append more lines.
                   setPreviewResult(null);
                   setPushResult(null);
                   setCasePushResult(null);
