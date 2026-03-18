@@ -446,7 +446,7 @@ export async function POST(req: Request) {
     }
 
     log.push(
-      `Pushing case surveillance eventList via HTTP PUT to ${endpointUrl} (eventType=roll_call)...`
+      `Pushing case surveillance eventList via HTTP PUT to ${endpointUrl} (includes roll_call + new_case + linked_case + eligible_for_vl + hei_at_6_to_8_weeks)...`
     );
 
     const headers: Record<string, string> = {

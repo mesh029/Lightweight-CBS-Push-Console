@@ -49,7 +49,6 @@ export default function HomePage() {
   const [loadingCasePush, setLoadingCasePush] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [versionOverride, setVersionOverride] = useState<string>("");
   const [openmrsFile, setOpenmrsFile] = useState<File | null>(null);
   const [facilityCode, setFacilityCode] = useState<string>("");
@@ -105,7 +104,7 @@ export default function HomePage() {
   // step=0 => Wizard Step 1 (Upload + Health)
   // step=1 => Wizard Step 2 (Confirm MFL)
   // step=2 => Wizard Step 3 (Visualization Preview)
-  // step=3 => Wizard Step 4 (Push Visualization + roll_call)
+  // step=3 => Wizard Step 4 (Push Visualization + Program Monitoring)
   const wizardActiveStep = step + 1;
 
   const buildVersionOptions = () => {
@@ -515,7 +514,7 @@ export default function HomePage() {
 
   const pushAll = async () => {
     clearTerminal();
-    appendTerminal("Push all", ["Starting: Visualization preview/push -> roll_call push"]);
+    appendTerminal("Push all", ["Starting: Visualization push -> Program Monitoring batch (roll_call + cases)"]);
 
     // Ensure we have a valid preview snapshot before pushing.
     if (!previewResult || !previewResult.ok) {
@@ -680,33 +679,15 @@ export default function HomePage() {
                 });
               } finally {
                 setUploading(false);
-                setUploadProgress(0);
               }
             }}
           >
-            {uploading ? `Uploading... ${uploadProgress}%` : "Upload OpenMRS Dump"}
+            {uploading ? "Uploading dump..." : "Upload OpenMRS Dump"}
           </button>
           {uploading && (
-            <div style={{ marginTop: "0.6rem", width: "100%", maxWidth: "420px" }}>
-              <div
-                style={{
-                  height: 10,
-                  background: "rgba(148,163,184,0.25)",
-                  borderRadius: 999,
-                  overflow: "hidden"
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    width: `${uploadProgress}%`,
-                    background: "var(--accent-primary)",
-                    transition: "width 0.2s ease"
-                  }}
-                />
-              </div>
-              <p style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "var(--text-muted)" }}>
-                Upload progress: {uploadProgress}%
+            <div style={{ marginTop: "0.6rem" }}>
+              <p style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>
+                Uploading dump transfer... then importing on the server.
               </p>
             </div>
           )}
@@ -772,7 +753,7 @@ export default function HomePage() {
           <h2 className="card-title">Push Wizard</h2>
           <p className="card-text">
             Follow the steps to upload/import an OpenMRS DB, confirm the Facility MFL, preview the visualization payload,
-            and then push visualization + program monitoring (roll_call).
+            and then push visualization + program monitoring (full batch).
           </p>
           <div
             style={{
@@ -881,7 +862,6 @@ export default function HomePage() {
                   onClick={async () => {
                     if (!openmrsFile) return;
                     setUploading(true);
-                    setUploadProgress(0);
                     setEtlRanDbName(null);
                     setUploadResult(null);
                     try {
@@ -893,12 +873,6 @@ export default function HomePage() {
                       }>((resolve, reject) => {
                         const xhr = new XMLHttpRequest();
                         xhr.open("POST", "/api/db/upload", true);
-                        xhr.upload.onprogress = (evt) => {
-                          if (evt.lengthComputable) {
-                            const pct = Math.round((evt.loaded / evt.total) * 100);
-                            setUploadProgress(pct);
-                          }
-                        };
                         xhr.onload = () => {
                           const status = xhr.status;
                           const text = xhr.responseText ?? "";
@@ -942,28 +916,15 @@ export default function HomePage() {
                       });
                     } finally {
                       setUploading(false);
-                      setUploadProgress(0);
                     }
                   }}
                 >
-                  {uploading ? `Uploading... ${uploadProgress}%` : "Upload OpenMRS Dump"}
+                  {uploading ? "Uploading dump..." : "Upload OpenMRS Dump"}
                 </button>
                 {uploading && (
-                  <div style={{ marginTop: "0.6rem", width: "100%", maxWidth: "420px" }}>
-                    <div style={{ height: 10, background: "rgba(148,163,184,0.25)", borderRadius: 999, overflow: "hidden" }}>
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${uploadProgress}%`,
-                          background: "var(--accent-primary)",
-                          transition: "width 0.2s ease"
-                        }}
-                      />
-                    </div>
-                    <p style={{ marginTop: "0.25rem", fontSize: "0.85rem", color: "var(--text-muted)" }}>
-                      Upload progress: {uploadProgress}%
-                    </p>
-                  </div>
+                  <p style={{ marginTop: "0.6rem", fontSize: "0.9rem", color: "var(--text-muted)" }}>
+                    Uploading transfer... then server imports the dump.
+                  </p>
                 )}
 
                 <button
@@ -1165,7 +1126,7 @@ export default function HomePage() {
                 disabled={!isFacilityMflValid(facilityCode) || loadingPreview || loadingPush || loadingCasePush}
                 className="btn btn-primary"
               >
-                {loadingPush || loadingCasePush ? "Pushing..." : "Push Visualization + roll_call"}
+                {loadingPush || loadingCasePush ? "Pushing..." : "Push Visualization + Program Monitoring"}
               </button>
               <button
                 type="button"
@@ -1226,7 +1187,7 @@ export default function HomePage() {
                 Program Monitoring (Case Surveillance)
               </h3>
               <p className="card-text" style={{ marginTop: "0.25rem" }}>
-                Pushes a minimal <code>roll_call</code> event right after visualization push.
+                Pushes the full Program Monitoring batch (roll_call + new_case + linked_case + eligible_for_vl + hei_at_6_to_8_weeks).
               </p>
               {casePushResult && (
                 <div style={{ marginTop: "0.6rem" }}>
