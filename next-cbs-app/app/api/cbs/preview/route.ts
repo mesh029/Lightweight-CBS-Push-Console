@@ -16,11 +16,13 @@ export async function POST(req: Request) {
       facilityCodeOverride?: string;
       openmrsDbNameOverride?: string; // reserved for future if we want to tailor ETL per DB
       skipEtlRefresh?: boolean;
+      versionOverride?: string;
     };
     const log: string[] = [];
 
     const sourceDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
     const facilityCodeEffective = body.facilityCodeOverride?.trim() || null;
+    const versionOverride = body.versionOverride?.trim() || null;
     const shouldRefresh = body.skipEtlRefresh ? false : true;
 
     if (shouldRefresh) {
@@ -144,7 +146,7 @@ export async function POST(req: Request) {
     }
 
     const mflCodeFinal = facilityCodeEffective || facilityMflFromDb || "UNKNOWN";
-    const versionFinal = emrVersion || "UNKNOWN";
+    const versionFinal = versionOverride || emrVersion || "UNKNOWN";
     const timestamp = formatTimestamp(new Date());
 
     log.push(

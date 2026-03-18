@@ -50,6 +50,7 @@ export default function HomePage() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [versionOverride, setVersionOverride] = useState<string>("");
   const [openmrsFile, setOpenmrsFile] = useState<File | null>(null);
   const [facilityCode, setFacilityCode] = useState<string>("");
   const [facilityName, setFacilityName] = useState<string>("");
@@ -101,6 +102,22 @@ export default function HomePage() {
   // step=2 => Wizard Step 3 (Visualization Preview)
   // step=3 => Wizard Step 4 (Push Visualization + roll_call)
   const wizardActiveStep = step + 1;
+
+  const buildVersionOptions = () => {
+    const detected = (health?.details?.emrVersion ?? "").trim();
+    // We keep this intentionally simple: user wanted "a selection of the two versions".
+    // In our environment dumps commonly differ between 19.2.x and 19.3.x.
+    const other =
+      detected.startsWith("19.3") || detected.startsWith("19.4")
+        ? "19.2.0"
+        : "19.3.0";
+
+    const a = detected || "19.2.0";
+    const b = other;
+    const uniq = Array.from(new Set([a, b])).filter(Boolean);
+    // Always return at most 2 options.
+    return uniq.slice(0, 2);
+  };
 
   const isFacilityMflValid = (code: string) => {
     const v = code.trim();
@@ -310,6 +327,7 @@ export default function HomePage() {
         body: JSON.stringify({
           facilityCodeOverride: facilityCode.trim() || undefined,
           openmrsDbNameOverride: dbName || undefined,
+          versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl
         })
       });
@@ -364,6 +382,7 @@ export default function HomePage() {
         body: JSON.stringify({
           facilityCodeOverride: facilityCode.trim() || undefined,
           openmrsDbNameOverride: dbName || undefined,
+          versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl
         })
       });
@@ -410,6 +429,7 @@ export default function HomePage() {
         body: JSON.stringify({
           facilityCodeOverride: facilityCode.trim() || undefined,
           openmrsDbNameOverride: dbName || undefined,
+          versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl
         })
       });
@@ -1003,6 +1023,31 @@ export default function HomePage() {
               >
                 {loadingPush ? "Saving MFL..." : "Save MFL to EMR + ETL (optional)"}
               </button>
+            )}
+            {step === 1 && (
+              <div style={{ marginTop: "0.85rem" }}>
+                <label className="field-label" htmlFor="versionOverride">
+                  EMR Version Override (optional)
+                </label>
+                <p className="field-help" style={{ marginTop: "0.15rem" }}>
+                  Leave empty to use the detected version from the uploaded DB.
+                </p>
+                <select
+                  id="versionOverride"
+                  className="field-input"
+                  value={versionOverride}
+                  onChange={(e) => setVersionOverride(e.target.value)}
+                  disabled={loadingHealth}
+                  style={{ padding: "0.55rem" }}
+                >
+                  <option value="">Auto (detected)</option>
+                  {buildVersionOptions().map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
           </div>
           {step === 1 && (

@@ -44,10 +44,12 @@ export async function POST(req: Request) {
       facilityCodeOverride?: string;
       openmrsDbNameOverride?: string;
       skipEtlRefresh?: boolean;
+      versionOverride?: string;
     };
 
     const sourceDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
     const facilityCodeOverride = body.facilityCodeOverride?.trim() || null;
+    const versionOverride = body.versionOverride?.trim() || null;
     const shouldRefresh = body.skipEtlRefresh ? false : true;
 
     if (shouldRefresh) {
@@ -168,7 +170,7 @@ export async function POST(req: Request) {
     }
 
     const mflCodeFinal = facilityCodeOverride || facilityMflFromDb || "UNKNOWN";
-    const versionFinal = emrVersion || "UNKNOWN";
+    const versionFinal = versionOverride || emrVersion || "UNKNOWN";
     const timestamp = formatTimestamp(new Date());
 
     // Payload wrapper based on kenyaemrIL VisualizationDataExchange keys observed in code/logs.

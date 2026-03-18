@@ -69,6 +69,7 @@ export async function POST(req: Request) {
       openmrsDbNameOverride?: string;
       facilityCodeOverride?: string;
       skipEtlRefresh?: boolean;
+      versionOverride?: string;
       // Optional testing controls. 0/undefined means "no hard cap besides what DB returns".
       maxNewCases?: number;
       maxLinkedCases?: number;
@@ -78,6 +79,7 @@ export async function POST(req: Request) {
 
     const openmrsDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
     const facilityCodeOverride = body.facilityCodeOverride?.trim() || null;
+    const versionOverride = body.versionOverride?.trim() || null;
     const shouldRefresh = body.skipEtlRefresh ? false : true;
 
     const maxNewCases =
@@ -118,7 +120,7 @@ export async function POST(req: Request) {
     if (!clientSecret) throw new Error("Missing case.surveillance.client.secret");
 
     const facilityCodeFinal = facilityCodeOverride || facilityMflFromDb || "UNKNOWN";
-    const versionFinal = emrVersion || "UNKNOWN";
+    const versionFinal = versionOverride || emrVersion || "UNKNOWN";
     const timestamp = formatTimestamp(new Date());
 
     // Case surveillance expects a JSON array of EventBase objects created by IL
