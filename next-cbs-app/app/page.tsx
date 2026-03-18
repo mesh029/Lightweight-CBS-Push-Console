@@ -109,18 +109,26 @@ export default function HomePage() {
 
   const buildVersionOptions = () => {
     const detected = (health?.details?.emrVersion ?? "").trim();
-    // We keep this intentionally simple: user wanted "a selection of the two versions".
-    // In our environment dumps commonly differ between 19.2.x and 19.3.x.
-    const other =
-      detected.startsWith("19.3") || detected.startsWith("19.4")
-        ? "19.2.0"
-        : "19.3.0";
 
-    const a = detected || "19.2.0";
-    const b = other;
-    const uniq = Array.from(new Set([a, b])).filter(Boolean);
-    // Always return at most 2 options.
-    return uniq.slice(0, 2);
+    // We want versions that exist in your upgrade packets and that you can realistically test
+    // when the CS endpoint accepts the payload but the monitoring dashboard doesn't update.
+    // Order matters: keep the detected version first.
+    const orderedCandidates: string[] = [];
+    if (detected) orderedCandidates.push(detected);
+
+    if (detected.startsWith("19.2")) {
+      // Gianchore-like: 19.2.2 -> test 19.3.x variants.
+      orderedCandidates.push("19.2.2", "19.3.0", "19.3.1", "19.3.2");
+    } else if (detected.startsWith("19.3")) {
+      orderedCandidates.push("19.3.0", "19.3.1", "19.3.2", "19.2.2");
+    } else {
+      // Unknown dump: offer the known set.
+      orderedCandidates.push("19.2.2", "19.3.0", "19.3.1", "19.3.2");
+    }
+
+    const uniq = Array.from(new Set(orderedCandidates)).filter(Boolean);
+    // Keep the UI simple: max 4 options.
+    return uniq.slice(0, 4);
   };
 
   const isFacilityMflValid = (code: string) => {
