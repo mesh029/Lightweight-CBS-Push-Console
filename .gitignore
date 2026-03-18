@@ -1,0 +1,17 @@
+# Next.js build output
+next-cbs-app/.next/
+
+# Dependencies
+next-cbs-app/node_modules/
+
+# Local uploaded DB dumps (potentially huge + sensitive)
+next-cbs-app/uploaded_dbs/
+
+# Next.js env files
+next-cbs-app/.env.local
+next-cbs-app/.env.*
+
+# OS / editor
+.DS_Store
+*.log
+
