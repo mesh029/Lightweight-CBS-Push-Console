@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type ApiResult = {
   ok: boolean;
@@ -59,6 +59,7 @@ export default function HomePage() {
   const [loadingDetectFacility, setLoadingDetectFacility] = useState(false);
   const [detectLog, setDetectLog] = useState<string[]>([]);
   const [openmrsDbName, setOpenmrsDbName] = useState<string>("");
+  const lastOpenmrsDbKey = "lcp_last_openmrs_db_name";
   const [step, setStep] = useState<number>(0);
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
 
@@ -75,6 +76,24 @@ export default function HomePage() {
       ...(safeLines.length ? safeLines : ["(no log lines)"])
     ]);
   };
+
+  // If the user previously uploaded/imported a DB, let them reuse it without re-uploading.
+  // We only prompt on first load of the page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const last = window.localStorage.getItem(lastOpenmrsDbKey);
+    if (!last) return;
+    if (openmrsDbName.trim()) return;
+
+    const ok = window.confirm(
+      `Use previously loaded OpenMRS DB?\n\nDB: ${last}\n\nIf you proceed, you can run Health/ETL and push again without re-uploading.`
+    );
+    if (!ok) return;
+
+    setOpenmrsDbName(last);
+    clearTerminal();
+    appendTerminal("Cache", [`Loaded OpenMRS DB from local cache: ${last}`]);
+  }, []);
 
   // Step mapping:
   // step=0 => Wizard Step 1 (Upload + Health)
@@ -147,6 +166,11 @@ export default function HomePage() {
     setLoadingHealth(true);
     setHealth(null);
     try {
+      try {
+        window.localStorage.setItem(lastOpenmrsDbKey, dbName);
+      } catch {
+        // ignore
+      }
       await detectFacility(dbName);
       const res = await fetch("/api/health", {
         method: "POST",
@@ -187,6 +211,11 @@ export default function HomePage() {
     setEtlResult(null);
     setHealth(null);
     try {
+      try {
+        window.localStorage.setItem(lastOpenmrsDbKey, dbName);
+      } catch {
+        // ignore
+      }
       await detectFacility(dbName);
 
       // 1) Run ETL procedures for this DB
@@ -541,6 +570,11 @@ export default function HomePage() {
                 });
                 if (resOk && data.dbName) {
                   setOpenmrsDbName(data.dbName);
+                  try {
+                    window.localStorage.setItem(lastOpenmrsDbKey, data.dbName);
+                  } catch {
+                    // localStorage may be blocked; ignore.
+                  }
                   setEtlRanDbName(null);
                   clearTerminal();
                   setPreviewResult(null);
