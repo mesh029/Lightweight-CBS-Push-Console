@@ -579,7 +579,12 @@ export default function HomePage() {
       const res = await fetch("/api/db/delete-loaded", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deleteDumpFile: true })
+        body: JSON.stringify({
+          deleteDumpFile: true,
+          // Server prefers its own marker, but falls back to this if the marker file is missing
+          // (e.g. for dumps created before marker support was added).
+          openmrsDbNameOverride: dbName || undefined
+        })
       });
       const data = await res.json();
       appendTerminal("DB cleanup", (data?.log ?? []) as string[]);
