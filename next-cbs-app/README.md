@@ -20,6 +20,10 @@ It supports:
   - CBS/Interop visualization endpoint (`visualization.metrics.post.api` in OpenMRS global_property)
   - CS token + CS sync endpoints (`case.surveillance.*` global properties)
 
+Tooling note:
+- `pnpm` is **not required** for this project.
+- Package manager used here is **npm** (`package-lock.json` is present).
+
 ## 2) What you need from the DB
 
 You need:
@@ -93,7 +97,24 @@ npm run dev
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-## 5) Basic workflow
+## 5) Build verification (recommended before push/deploy)
+
+Use this to confirm the app compiles cleanly:
+
+```bash
+cd next-cbs-app
+npm run build
+```
+
+If build succeeds, you can run production mode:
+
+```bash
+npm run start
+```
+
+If build fails, fix the reported error first before pushing/deploying.
+
+## 6) Basic workflow
 
 1. Upload OpenMRS dump in Step 1 (or reuse cached DB name)
 2. Run ETL + Health Check
@@ -102,7 +123,7 @@ Then open [http://localhost:3000](http://localhost:3000).
 5. Push Visualization + Program Monitoring
 6. If done with that dump, click **Delete Current Loaded DB** to free disk space
 
-## 6) Storage and cleanup
+## 7) Storage and cleanup
 
 - Uploaded dumps are stored under `next-cbs-app/uploaded_dbs/`
 - Imported DB names are created as `openmrs_<timestamp>`
@@ -110,7 +131,7 @@ Then open [http://localhost:3000](http://localhost:3000).
   - drop that imported DB
   - remove matching uploaded dump file (same timestamp) when found
 
-## 7) Production notes
+## 8) Production notes
 
 - Run behind process manager/reverse proxy if needed (`pm2`, `systemd`, `nginx`)
 - Restrict access: this tool can import/drop DBs

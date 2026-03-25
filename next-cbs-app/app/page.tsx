@@ -116,7 +116,8 @@ export default function HomePage() {
   const wizardActiveStep = step + 1;
 
   const buildVersionOptions = () => {
-    const detected = (health?.details?.emrVersion ?? "").trim();
+    const details = (health?.details ?? {}) as HealthDetails;
+    const detected = (details.emrVersion ?? "").trim();
 
     // We want versions that exist in your upgrade packets and that you can realistically test
     // when the CS endpoint accepts the payload but the monitoring dashboard doesn't update.
@@ -689,7 +690,6 @@ export default function HomePage() {
             onClick={async () => {
               if (!openmrsFile) return;
               setUploading(true);
-              setUploadProgress(0);
               setEtlRanDbName(null);
               setUploadResult(null);
               clearTerminal();
@@ -705,18 +705,13 @@ export default function HomePage() {
                   xhr.open("POST", "/api/db/upload", true);
                   xhr.upload.onprogress = (evt) => {
                     if (evt.lengthComputable) {
-                      const pct = Math.round((evt.loaded / evt.total) * 100);
-                      // Upload transfer reaches 100% quickly, but server-side import can take longer.
-                      // Cap at 95% during upload to avoid misleading the user.
-                      setUploadProgress(Math.min(95, pct));
+                      // Keep handler so we can log/extend later, without showing inaccurate percentages.
                     }
                   };
                   xhr.upload.onloadend = () => {
-                    setUploadProgress(95);
                     appendTerminalLine("Upload transfer finished; importing dump on server (please wait)...");
                   };
                   xhr.onload = () => {
-                    setUploadProgress(100);
                     const status = xhr.status;
                     const text = xhr.responseText ?? "";
                     let parsed: any = null;

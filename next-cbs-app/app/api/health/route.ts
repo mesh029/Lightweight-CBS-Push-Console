@@ -86,9 +86,11 @@ async function runHealth(options: HealthOptions = {}) {
     if (Array.isArray(rows) && rows.length > 0) {
       log.push("Found etl_current_in_care table, counting rows...");
       const [countRows] = await pool.query("SELECT COUNT(*) as c FROM etl_current_in_care;");
-      if (Array.isArray(countRows) && countRows.length > 0 && "c" in countRows[0]) {
-        // @ts-expect-error dynamic row
-        etlCount = Number(countRows[0].c);
+      if (Array.isArray(countRows) && countRows.length > 0) {
+        const first = countRows[0] as { c?: number | string };
+        if (first && first.c != null) {
+          etlCount = Number(first.c);
+        }
         log.push(`etl_current_in_care row count: ${etlCount}`);
       }
     } else {
