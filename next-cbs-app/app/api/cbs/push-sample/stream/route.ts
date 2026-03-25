@@ -381,11 +381,17 @@ export async function POST(req: Request) {
             `${logPrefix}: attempt ${attempt}/${maxAttempts} (correlationId=${correlationId})`
           );
           try {
+            // Prevent hangs when upstream gateway never responds.
+            const controller = new AbortController();
+            const timeoutMs = 30000;
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
             const res = await fetch(endpointUrl, {
               method: "POST",
               headers,
-              body: JSON.stringify(payload)
+              body: JSON.stringify(payload),
+              signal: controller.signal
             });
+            clearTimeout(timeout);
             lastStatus = res.status;
             lastBody = await res.text();
             safePushLog(`${logPrefix}: HTTP ${lastStatus} received (ok=${res.ok})`);

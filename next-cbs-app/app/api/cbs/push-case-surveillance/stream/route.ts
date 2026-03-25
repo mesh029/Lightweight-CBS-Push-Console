@@ -780,11 +780,17 @@ export async function POST(req: Request) {
             `Case-surveillance push attempt ${attempt}/${maxAttempts} (correlationId=${correlationId})`
           );
           try {
+            // Prevent hangs when upstream gateway never responds.
+            const controller = new AbortController();
+            const timeoutMs = 30000;
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
             const res = await fetch(endpointUrl, {
               method: "PUT",
               headers,
-              body: JSON.stringify(eventList)
+              body: JSON.stringify(eventList),
+              signal: controller.signal
             });
+            clearTimeout(timeout);
             lastStatus = res.status;
             lastBody = await res.text();
             if (res.ok) {
