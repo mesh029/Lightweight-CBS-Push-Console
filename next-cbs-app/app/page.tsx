@@ -49,6 +49,7 @@ export default function HomePage() {
   const [loadingCasePush, setLoadingCasePush] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [loadingAutoRun, setLoadingAutoRun] = useState(false);
   const [versionOverride, setVersionOverride] = useState<string>("");
   const [caseEventTypes, setCaseEventTypes] = useState<string[]>([
     "roll_call",
@@ -174,17 +175,67 @@ export default function HomePage() {
 
       setFacilityName(String(data.facilityName ?? ""));
       setDetectedMflCode(String(data.facilityMflCode ?? ""));
-      setMflNeedsInput(Boolean(data.needsMflInput));
+      const needsMflInput = Boolean(data.needsMflInput);
+      setMflNeedsInput(needsMflInput);
       setMflSource(String(data.mflSource ?? "unknown"));
       setDetectLog((data.log ?? []) as string[]);
       appendTerminal("Facility detect", (data.log ?? []) as string[]);
 
       const mflFromDetect = String(data.facilityMflCode ?? "");
-      if (!data.needsMflInput && isFacilityMflValid(mflFromDetect)) {
+      if (!needsMflInput && isFacilityMflValid(mflFromDetect)) {
         setFacilityCode(mflFromDetect);
       } else {
         // Only clear if the user hasn't entered something valid.
         setFacilityCode((prev) => (isFacilityMflValid(prev) ? prev : ""));
+      }
+
+      // Auto-fix for Nyamira when the dump has missing/placeholder facility.mflcode (e.g. 12345).
+      // This lets users proceed without typing the MFL manually.
+      const detectedFacilityName = String(data.facilityName ?? "").trim();
+      const shouldAutoFix =
+        needsMflInput && detectedFacilityName.length > 0 && !isFacilityMflValid(facilityCode);
+
+      if (shouldAutoFix) {
+        try {
+          appendTerminal("Auto MFL fix", [
+            `Facility dump has placeholder/unset MFL (detected=${mflFromDetect || "empty"}). Trying Nyamira mapping for '${detectedFacilityName}'...`
+          ]);
+
+          const resolveRes = await fetch("/api/facility/resolve-mfl", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ facilityName: detectedFacilityName, county: "NYAMIRA" })
+          });
+          const resolved = await resolveRes.json();
+
+          if (resolveRes.ok && resolved?.code && isFacilityMflValid(String(resolved.code))) {
+            appendTerminal("Auto MFL fix", [
+              `Resolved '${detectedFacilityName}' -> MFL ${String(resolved.code)}. Updating OpenMRS/ETL...`
+            ]);
+
+            const updRes = await fetch("/api/facility/update-mfl", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                newMfl: String(resolved.code),
+                openmrsDbNameOverride: dbToUse
+              })
+            });
+            const updData = await updRes.json();
+            appendTerminal("Auto MFL update", (updData?.log ?? []) as string[]);
+
+            setFacilityCode(String(resolved.code));
+            setDetectedMflCode(String(resolved.code));
+            setMflNeedsInput(false);
+            setMflSource("nyamira_csv");
+          } else {
+            appendTerminal("Auto MFL fix", [
+              `No Nyamira MFL mapping match found for '${detectedFacilityName}'.`
+            ]);
+          }
+        } catch (e) {
+          appendTerminal("Auto MFL fix failed", [String(e)]);
+        }
       }
     } catch {
       setFacilityName("");
@@ -238,8 +289,8 @@ export default function HomePage() {
     }
   };
 
-  const runEtlAndHealth = async () => {
-    const dbName = openmrsDbName.trim();
+  const runEtlAndHealth = async (dbNameOverride?: string) => {
+    const dbName = (dbNameOverride ?? openmrsDbName).trim();
     if (!dbName) {
       setHealth({
         ok: false,
@@ -565,6 +616,94 @@ export default function HomePage() {
     appendTerminal("Push all", ["Done."]);
   };
 
+  // One-click flow: Upload (if needed) -> ETL + Health -> Preview -> Visualization push + Program Monitoring push.
+  // This skips the manual step-by-step wizard since MFL can be auto-resolved from the Nyamira mapping.
+  const autoRunToEnd = async () => {
+    if (loadingAutoRun) return;
+
+    clearTerminal();
+    setPushResult(null);
+    setCasePushResult(null);
+    setPreviewResult(null);
+    setHealth(null);
+    setEtlResult(null);
+    setEtlRanDbName(null);
+
+    setLoadingAutoRun(true);
+    try {
+      let dbName = openmrsDbName.trim();
+
+      // 1) Ensure we have a DB name (upload if we only have a file)
+      if (!dbName) {
+        if (openmrsFile) {
+          appendTerminal("Auto run", ["Uploading OpenMRS dump (server import may take time)..."]);
+          const form = new FormData();
+          form.append("openmrsDump", openmrsFile);
+
+          const uploadRes = await fetch("/api/db/upload", {
+            method: "POST",
+            body: form
+          });
+          const uploadData = await uploadRes.json();
+
+          const resOk = uploadRes.ok && Boolean(uploadData?.ok) && Boolean(uploadData?.dbName);
+          if (!resOk) {
+            throw new Error(
+              uploadData?.message ??
+                "Auto run upload failed (see server response details in console logs)."
+            );
+          }
+
+          dbName = String(uploadData.dbName);
+          setOpenmrsDbName(dbName);
+          setCachedOpenmrsDbName(dbName);
+          try {
+            window.localStorage.setItem(lastOpenmrsDbKey, dbName);
+          } catch {
+            // ignore
+          }
+          setUploadResult({
+            ok: true,
+            message: uploadData.message ?? "OpenMRS dump uploaded & imported",
+            details: uploadData
+          });
+        } else if (cachedOpenmrsDbName.trim()) {
+          const ok = window.confirm(
+            `Use previously loaded OpenMRS DB?\n\nDB: ${cachedOpenmrsDbName.trim()}`
+          );
+          if (!ok) throw new Error("Auto run cancelled (cached DB not accepted).");
+
+          dbName = cachedOpenmrsDbName.trim();
+          setOpenmrsDbName(dbName);
+        } else {
+          throw new Error("Load an OpenMRS dump (or select an already-loaded DB name) before auto run.");
+        }
+      }
+
+      appendTerminal("Auto run", [`Running ETL + health check for '${dbName}'...`]);
+      // runEtlAndHealth() also runs facility detection and will auto-fix MFL when possible.
+      await runEtlAndHealth(dbName);
+
+      appendTerminal("Auto run", ["Generating visualization preview..."]);
+      const previewOk = await callPreview();
+      if (!previewOk) throw new Error("Preview generation failed; auto run aborted.");
+
+      appendTerminal("Auto run", ["Pushing Visualization payload..."]);
+      await callPush();
+
+      appendTerminal("Auto run", ["Pushing Program Monitoring batch (Case Surveillance)..."]);
+      await callCaseSurveillancePush();
+
+      appendTerminalLine("Auto run complete.");
+      setStep(3);
+    } catch (e) {
+      setPushResult({ ok: false, message: String(e) });
+      appendTerminal("Auto run failed", [String(e)]);
+    } finally {
+      setLoadingAutoRun(false);
+    }
+  };
+
   const deleteCurrentLoadedDb = async () => {
     const dbName = openmrsDbName.trim() || cachedOpenmrsDbName.trim();
     const ok = window.confirm(
@@ -687,7 +826,7 @@ export default function HomePage() {
             className="btn btn-primary"
             style={{ marginTop: "0.25rem" }}
             disabled={!openmrsDbName.trim()}
-            onClick={runEtlAndHealth}
+            onClick={() => runEtlAndHealth()}
           >
             Run ETL + Health Check for This DB
           </button>
@@ -939,9 +1078,23 @@ export default function HomePage() {
                   type="button"
                   className="btn btn-primary"
                   disabled={!openmrsDbName.trim() || uploading || loadingHealth}
-                  onClick={runEtlAndHealth}
+                  onClick={() => runEtlAndHealth()}
                 >
                   {loadingHealth ? "Running..." : "Run ETL + Health Check"}
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={
+                    loadingAutoRun ||
+                    uploading ||
+                    loadingHealth ||
+                    (!openmrsDbName.trim() && !openmrsFile && !cachedOpenmrsDbName.trim())
+                  }
+                  onClick={autoRunToEnd}
+                >
+                  {loadingAutoRun ? "Auto Running..." : "Auto Run to End"}
                 </button>
 
                 <button
