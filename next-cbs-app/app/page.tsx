@@ -57,6 +57,7 @@ export default function HomePage() {
   const [mflSource, setMflSource] = useState<string>("unknown");
   const [mflNeedsInput, setMflNeedsInput] = useState<boolean>(true);
   const [loadingDetectFacility, setLoadingDetectFacility] = useState(false);
+  const [deletingLoadedDb, setDeletingLoadedDb] = useState(false);
   const [detectLog, setDetectLog] = useState<string[]>([]);
   const [openmrsDbName, setOpenmrsDbName] = useState<string>("");
   const lastOpenmrsDbKey = "lcp_last_openmrs_db_name";
@@ -544,6 +545,61 @@ export default function HomePage() {
     appendTerminal("Push all", ["Done."]);
   };
 
+  const deleteCurrentLoadedDb = async () => {
+    const dbName = openmrsDbName.trim();
+    if (!dbName) return;
+    const ok = window.confirm(
+      `Delete currently loaded DB?\n\nThis will DROP database '${dbName}' and remove the uploaded .sql file if found.`
+    );
+    if (!ok) return;
+
+    setDeletingLoadedDb(true);
+    try {
+      const res = await fetch("/api/db/delete-loaded", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          openmrsDbNameOverride: dbName,
+          deleteDumpFile: true
+        })
+      });
+      const data = await res.json();
+      appendTerminal("DB cleanup", (data?.log ?? []) as string[]);
+
+      if (res.ok && data?.ok) {
+        setOpenmrsDbName("");
+        setOpenmrsFile(null);
+        setFacilityCode("");
+        setFacilityName("");
+        setDetectedMflCode("");
+        setMflNeedsInput(true);
+        setMflSource("unknown");
+        setDetectLog([]);
+        setHealth(null);
+        setPreviewResult(null);
+        setPushResult(null);
+        setCasePushResult(null);
+        setUploadResult(null);
+        setEtlResult(null);
+        setEtlRanDbName(null);
+        setStep(0);
+        setVersionOverride("");
+        try {
+          window.localStorage.removeItem(lastOpenmrsDbKey);
+        } catch {
+          // ignore
+        }
+        appendTerminalLine("Cleanup complete. You can upload/load another DB.");
+      } else {
+        appendTerminal("DB cleanup failed", [data?.message ?? "Unknown cleanup error"]);
+      }
+    } catch (e) {
+      appendTerminal("DB cleanup failed", [String(e)]);
+    } finally {
+      setDeletingLoadedDb(false);
+    }
+  };
+
   return (
     <main className="page">
       <header className="page-header">
@@ -942,6 +998,14 @@ export default function HomePage() {
                   onClick={callHealth}
                 >
                   {loadingHealth ? "Checking..." : "Run Health Check"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={!openmrsDbName.trim() || deletingLoadedDb || uploading || loadingHealth}
+                  onClick={deleteCurrentLoadedDb}
+                >
+                  {deletingLoadedDb ? "Deleting loaded DB..." : "Delete Current Loaded DB"}
                 </button>
               </div>
 
