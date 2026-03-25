@@ -67,6 +67,9 @@ export default function HomePage() {
   const [deletingLoadedDb, setDeletingLoadedDb] = useState(false);
   const [detectLog, setDetectLog] = useState<string[]>([]);
   const [openmrsDbName, setOpenmrsDbName] = useState<string>("");
+  // If the user previously loaded a DB in this browser, we cache the DB name here so the UI can
+  // offer actions (like delete) without requiring re-upload.
+  const [cachedOpenmrsDbName, setCachedOpenmrsDbName] = useState<string>("");
   const lastOpenmrsDbKey = "lcp_last_openmrs_db_name";
   const [step, setStep] = useState<number>(0);
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
@@ -96,6 +99,7 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
     const last = window.localStorage.getItem(lastOpenmrsDbKey);
     if (!last) return;
+    setCachedOpenmrsDbName(last);
     if (openmrsDbName.trim()) return;
 
     const ok = window.confirm(
@@ -562,7 +566,7 @@ export default function HomePage() {
   };
 
   const deleteCurrentLoadedDb = async () => {
-    const dbName = openmrsDbName.trim();
+    const dbName = openmrsDbName.trim() || cachedOpenmrsDbName.trim();
     if (!dbName) return;
     const ok = window.confirm(
       `Delete currently loaded DB?\n\nThis will DROP database '${dbName}' and remove the uploaded .sql file if found.`
@@ -584,6 +588,7 @@ export default function HomePage() {
 
       if (res.ok && data?.ok) {
         setOpenmrsDbName("");
+        setCachedOpenmrsDbName("");
         setOpenmrsFile(null);
         setFacilityCode("");
         setFacilityName("");
@@ -1011,7 +1016,12 @@ export default function HomePage() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  disabled={!openmrsDbName.trim() || loadingHealth || deletingLoadedDb || uploading}
+                  disabled={
+                    !(openmrsDbName.trim() || cachedOpenmrsDbName.trim()) ||
+                    loadingHealth ||
+                    deletingLoadedDb ||
+                    uploading
+                  }
                   onClick={callHealth}
                 >
                   {loadingHealth ? "Checking..." : "Run Health Check"}
@@ -1019,7 +1029,12 @@ export default function HomePage() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  disabled={!openmrsDbName.trim() || deletingLoadedDb || uploading || loadingHealth}
+                  disabled={
+                    !(openmrsDbName.trim() || cachedOpenmrsDbName.trim()) ||
+                    deletingLoadedDb ||
+                    uploading ||
+                    loadingHealth
+                  }
                   onClick={deleteCurrentLoadedDb}
                 >
                   {deletingLoadedDb ? "Deleting loaded DB..." : "Delete Current Loaded DB"}
