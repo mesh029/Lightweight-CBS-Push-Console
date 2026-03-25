@@ -428,9 +428,17 @@ export async function POST(req: Request) {
           ON t.patient_id = pos.patient_id AND t.date_created = pos.date_created
         INNER JOIN etl_patient_demographics demo
           ON demo.patient_id = t.patient_id
-        LEFT JOIN etl_person_address addr
+        LEFT JOIN (
+          SELECT
+            patient_id,
+            MAX(county) AS county,
+            MAX(sub_county) AS sub_county,
+            MAX(ward) AS ward
+          FROM etl_person_address
+          WHERE (voided = 0 OR voided IS NULL)
+          GROUP BY patient_id
+        ) addr
           ON addr.patient_id = t.patient_id
-          AND (addr.voided = 0 OR addr.voided IS NULL)
         `
             );
 
@@ -480,9 +488,17 @@ export async function POST(req: Request) {
         FROM etl_hiv_enrollment e
         INNER JOIN etl_patient_demographics demo
           ON demo.patient_id = e.patient_id
-        LEFT JOIN etl_person_address addr
+        LEFT JOIN (
+          SELECT
+            patient_id,
+            MAX(county) AS county,
+            MAX(sub_county) AS sub_county,
+            MAX(ward) AS ward
+          FROM etl_person_address
+          WHERE (voided = 0 OR voided IS NULL)
+          GROUP BY patient_id
+        ) addr
           ON addr.patient_id = e.patient_id
-          AND (addr.voided = 0 OR addr.voided IS NULL)
         WHERE (e.voided = 0 OR e.voided IS NULL)
           AND e.date_started_art_at_transferring_facility IS NOT NULL
         `
@@ -553,9 +569,17 @@ export async function POST(req: Request) {
       FROM etl_viral_load_validity_tracker v
       INNER JOIN etl_patient_demographics demo
         ON demo.patient_id = v.patient_id
-      LEFT JOIN etl_person_address addr
+      LEFT JOIN (
+        SELECT
+          patient_id,
+          MAX(county) AS county,
+          MAX(sub_county) AS sub_county,
+          MAX(ward) AS ward
+        FROM etl_person_address
+        WHERE (voided = 0 OR voided IS NULL)
+        GROUP BY patient_id
+      ) addr
         ON addr.patient_id = v.patient_id
-        AND (addr.voided = 0 OR addr.voided IS NULL)
       WHERE v.date_started_art IS NOT NULL
         AND (
           (TIMESTAMPDIFF(MONTH, v.date_started_art, CURRENT_DATE()) >= 3
@@ -644,9 +668,17 @@ export async function POST(req: Request) {
       FROM etl_hei_follow_up_visit h
       INNER JOIN etl_patient_demographics demo
         ON demo.patient_id = h.patient_id
-      LEFT JOIN etl_person_address addr
+      LEFT JOIN (
+        SELECT
+          patient_id,
+          MAX(county) AS county,
+          MAX(sub_county) AS sub_county,
+          MAX(ward) AS ward
+        FROM etl_person_address
+        WHERE (voided = 0 OR voided IS NULL)
+        GROUP BY patient_id
+      ) addr
         ON addr.patient_id = h.patient_id
-        AND (addr.voided = 0 OR addr.voided IS NULL)
       WHERE h.followup_type = 5622;
       `
             );
