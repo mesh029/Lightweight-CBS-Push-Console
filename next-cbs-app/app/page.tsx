@@ -1822,7 +1822,8 @@ export default function HomePage() {
               {(() => {
                 const vizDetails = (pushResult?.details ?? {}) as any;
                 const vizSummary = vizDetails?.pushSummary ?? null;
-                const vizPayload = vizDetails?.payload ?? null;
+                const previewDetails = (previewResult?.details ?? {}) as any;
+                const vizPayload = vizDetails?.payload ?? previewDetails?.payload ?? null;
                 const caseDetails = (casePushResult?.details ?? {}) as any;
                 const caseSummary = caseDetails?.pushSummary ?? null;
                 const effectiveCaseSummary = caseSummary ?? prePutCaseSummary ?? null;
@@ -1896,7 +1897,16 @@ export default function HomePage() {
                   caseSummary ?? prePutCaseSummary ?? caseComputedSummary ?? null;
 
                 const renderSelection = () => {
-                  if (!vizSummary && !effectiveVizRecordsResolved && !effectiveCaseSummaryResolved) return "n/a";
+                  if (!vizSummary && !effectiveVizRecordsResolved && !effectiveCaseSummaryResolved) {
+                    if (vizComputed) {
+                      return {
+                        note: "Using preview payload-derived stats (push summary not available yet).",
+                        visualization_records: vizComputed.recordsToPush,
+                        visualization_totalRecordsToPush: vizComputed.totalRecordsToPush
+                      };
+                    }
+                    return "n/a";
+                  }
 
                   if (payloadStatsView === "vizSummary") return vizSummary ?? "n/a";
                   if (payloadStatsView === "vizRecords")
