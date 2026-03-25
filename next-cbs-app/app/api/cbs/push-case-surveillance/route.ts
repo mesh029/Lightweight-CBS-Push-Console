@@ -27,6 +27,133 @@ async function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function updateOpenmrsFacilityMflAndEtlsiteCode(
+  openmrsDbName: string,
+  newMfl: string,
+  log: string[]
+) {
+  // The UI can request pushing facility B while the uploaded OpenMRS dump still has
+  // global_property.facility.mflcode set to facility A. That produces ETL data for A
+  // but labels the payload for B (critical risk).
+  const raw = newMfl.trim();
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(
+      `updateOpenmrsFacilityMflAndEtlsiteCode: newMfl must be numeric, got '${newMfl}'`
+    );
+  }
+
+  const cfg = loadDbConfig();
+
+  // 1) Update OpenMRS global_property.facility.mflcode
+  log.push(`Facility sync: setting openmrs.global_property.facility.mflcode='${raw}'...`);
+  const openmrsConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: openmrsDbName
+  });
+
+  await openmrsConn.query(
+    "INSERT INTO global_property (property, property_value, uuid) VALUES ('facility.mflcode', ?, UUID()) ON DUPLICATE KEY UPDATE property_value = VALUES(property_value);",
+    [raw]
+  );
+  await openmrsConn.end();
+
+  // 2) Update ETL default facility info tables if present
+  const etlConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: "kenyaemr_etl"
+  });
+
+  const [etlTables] = await etlConn.query("SHOW TABLES LIKE 'etl_default_facility_info';");
+  if (Array.isArray(etlTables) && etlTables.length > 0) {
+    await etlConn.query("UPDATE etl_default_facility_info SET siteCode = ?;", [raw]);
+    log.push("Facility sync: updated kenyaemr_etl.etl_default_facility_info.siteCode");
+  } else {
+    log.push("Facility sync: etl_default_facility_info not found in kenyaemr_etl (skipped)");
+  }
+  await etlConn.end();
+
+  // 3) Update datatools default facility info if present
+  const dtConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: "kenyaemr_datatools"
+  });
+
+  const [dtTables] = await dtConn.query("SHOW TABLES LIKE 'default_facility_info';");
+  if (Array.isArray(dtTables) && dtTables.length > 0) {
+    await dtConn.query("UPDATE default_facility_info SET siteCode = ?;", [raw]);
+    log.push("Facility sync: updated kenyaemr_datatools.default_facility_info.siteCode");
+  } else {
+    log.push("Facility sync: default_facility_info not found in kenyaemr_datatools (skipped)");
+  }
+  await dtConn.end();
+}
+
+async function verifyFacilityMflMatchesEtlSiteCode(
+  openmrsDbName: string,
+  expectedMfl: string,
+  log: string[]
+) {
+  const rawExpected = expectedMfl.trim();
+  const cfg = loadDbConfig();
+
+  // Verify OpenMRS global_property.facility.mflcode
+  const openmrsConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: openmrsDbName
+  });
+  const [gpRows] = await openmrsConn.query(
+    "SELECT property_value FROM global_property WHERE property = 'facility.mflcode' LIMIT 1;"
+  );
+  await openmrsConn.end();
+
+  const openmrsValue = Array.isArray(gpRows) && gpRows.length ? String((gpRows[0] as any)?.property_value ?? "").trim() : "";
+  if (!openmrsValue) {
+    throw new Error("verifyFacilityMflMatchesEtlSiteCode: openmrs global_property.facility.mflcode is empty/missing");
+  }
+  if (openmrsValue !== rawExpected) {
+    throw new Error(
+      `verifyFacilityMflMatchesEtlSiteCode: openmrs global_property.facility.mflcode mismatch expected=${rawExpected} actual=${openmrsValue}`
+    );
+  }
+
+  // Verify ETL facility siteCode
+  const etlConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: "kenyaemr_etl"
+  });
+  const [etlRows] = await etlConn.query(
+    "SELECT siteCode FROM etl_default_facility_info LIMIT 1;"
+  );
+  await etlConn.end();
+
+  const etlValue = Array.isArray(etlRows) && etlRows.length ? String((etlRows[0] as any)?.siteCode ?? "").trim() : "";
+  if (!etlValue) {
+    throw new Error("verifyFacilityMflMatchesEtlSiteCode: kenyaemr_etl.etl_default_facility_info.siteCode is empty/missing");
+  }
+  if (etlValue !== rawExpected) {
+    throw new Error(
+      `verifyFacilityMflMatchesEtlSiteCode: etl_default_facility_info.siteCode mismatch expected=${rawExpected} actual=${etlValue}`
+    );
+  }
+
+  log.push(`Facility verification OK: openmrs.facility.mflcode=${rawExpected}, etl.siteCode=${etlValue}`);
+}
+
 async function getCaseSurveillanceGlobals(openmrsDbName: string) {
   const dbCfg = loadDbConfig();
   const conn = await mysql.createConnection({
@@ -81,7 +208,10 @@ export async function POST(req: Request) {
     const openmrsDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
     const facilityCodeOverride = body.facilityCodeOverride?.trim() || null;
     const versionOverride = body.versionOverride?.trim() || null;
-    const shouldRefresh = body.skipEtlRefresh ? false : true;
+    // Critical safety: always refresh ETL before pushing case-surveillance.
+    // This prevents stale ETL outputs (facility A) from being mislabeled as the newly requested facility (facility B).
+    // The UI may still send `skipEtlRefresh`, but the server will ignore it.
+    const shouldRefresh = true;
 
     const maxNewCases =
       typeof body.maxNewCases === "number" && body.maxNewCases > 0 ? body.maxNewCases : 0;
@@ -122,23 +252,56 @@ export async function POST(req: Request) {
     }
 
     if (shouldRefresh) {
+      // Pre-sync facility.mflcode into OpenMRS + ETL so ETL refresh is computed for the
+      // same facility we intend to push (some dumps have missing facility.mflcode).
+      if (facilityCodeOverride) {
+        await updateOpenmrsFacilityMflAndEtlsiteCode(openmrsDbName, facilityCodeOverride, log);
+      }
+
       log.push(
         `Case-surveillance push: running ETL + facility sync for '${openmrsDbName}'...`
       );
       const etlRes = await runEtlAndSyncMfl(openmrsDbName);
       log.push(...etlRes.log);
       if (!etlRes.ok) throw new Error("ETL auto-refresh failed");
+      log.push("ETL refresh forced=true (completed) for requested facility.");
     }
 
     log.push(`Reading case-surveillance globals from '${openmrsDbName}'...`);
-    const globals = await getCaseSurveillanceGlobals(openmrsDbName);
+    let globals = await getCaseSurveillanceGlobals(openmrsDbName);
 
-    const endpointUrl = globals["case.surveillance.base.url.api"];
-    const tokenUrl = globals["case.surveillance.token.url"];
-    const clientId = globals["case.surveillance.client.id"];
-    const clientSecret = globals["case.surveillance.client.secret"];
-    const emrVersion = globals["kenyaemr.version"];
-    const facilityMflFromDb = globals["facility.mflcode"];
+    let endpointUrl = globals["case.surveillance.base.url.api"];
+    let tokenUrl = globals["case.surveillance.token.url"];
+    let clientId = globals["case.surveillance.client.id"];
+    let clientSecret = globals["case.surveillance.client.secret"];
+    let emrVersion = globals["kenyaemr.version"];
+    let facilityMflFromDb = globals["facility.mflcode"];
+
+    // Facility mismatch protection:
+    // If caller requested facilityCodeOverride, but the OpenMRS dump still has
+    // global_property.facility.mflcode set to another facility, ETL will be built for
+    // the old facility and the payload will be mislabeled for the new one.
+    if (facilityCodeOverride) {
+      const requested = facilityCodeOverride.trim();
+      const current = String(facilityMflFromDb ?? "").trim();
+      if (requested && current !== requested) {
+        log.push(
+          `Facility mismatch detected: requested=${requested} but openmrs.facility.mflcode=${current || "empty"}. Updating + forcing ETL rerun...`
+        );
+        await updateOpenmrsFacilityMflAndEtlsiteCode(openmrsDbName, requested, log);
+        const etlRes = await runEtlAndSyncMfl(openmrsDbName);
+        log.push(...etlRes.log);
+        if (!etlRes.ok) throw new Error("ETL auto-refresh failed after facility mismatch correction");
+
+        globals = await getCaseSurveillanceGlobals(openmrsDbName);
+        endpointUrl = globals["case.surveillance.base.url.api"];
+        tokenUrl = globals["case.surveillance.token.url"];
+        clientId = globals["case.surveillance.client.id"];
+        clientSecret = globals["case.surveillance.client.secret"];
+        emrVersion = globals["kenyaemr.version"];
+        facilityMflFromDb = globals["facility.mflcode"];
+      }
+    }
 
     if (!endpointUrl) throw new Error("Missing case.surveillance.base.url.api");
     if (!tokenUrl) throw new Error("Missing case.surveillance.token.url");
@@ -148,6 +311,8 @@ export async function POST(req: Request) {
     const facilityCodeFinal = facilityCodeOverride || facilityMflFromDb || "UNKNOWN";
     const versionFinal = versionOverride || emrVersion || "UNKNOWN";
     const timestamp = formatTimestamp(new Date());
+
+    await verifyFacilityMflMatchesEtlSiteCode(openmrsDbName, facilityCodeFinal, log);
 
     // Case surveillance expects a JSON array of EventBase objects created by IL
     // (see `mapToDatasetStructure` and `generateCaseSurveillancePayload`).
@@ -168,6 +333,10 @@ export async function POST(req: Request) {
     });
 
     const eventList: any[] = [];
+    // Build-time summary returned to the caller for auditability.
+    let builtEventTypeCounts: Record<string, number> = {};
+    let builtMinCreatedAt: string | null = null;
+    let builtMaxCreatedAt: string | null = null;
     if (includeEventTypes.has("roll_call")) {
       eventList.push({
         eventType: "roll_call",
@@ -453,6 +622,37 @@ export async function POST(req: Request) {
       }
 
       log.push(`Built case-surveillance eventList size=${eventList.length}.`);
+
+      // Safety check: ensure the constructed payload is consistently labeled
+      // for the requested facilityCodeFinal.
+      builtEventTypeCounts = {};
+      builtMinCreatedAt = null;
+      builtMaxCreatedAt = null;
+      for (const ev of eventList) {
+        const t = String(ev?.eventType ?? "");
+        if (!t) continue;
+        builtEventTypeCounts[t] = (builtEventTypeCounts[t] ?? 0) + 1;
+        const createdAt = String(ev?.event?.createdAt ?? "");
+        if (createdAt) {
+          if (builtMinCreatedAt == null || createdAt < builtMinCreatedAt)
+            builtMinCreatedAt = createdAt;
+          if (builtMaxCreatedAt == null || createdAt > builtMaxCreatedAt)
+            builtMaxCreatedAt = createdAt;
+        }
+        if ((ev?.event?.mflCode ?? null) !== facilityCodeFinal) {
+          throw new Error(
+            `payload facility label mismatch detected: facilityCodeFinal=${facilityCodeFinal} eventType=${t} event.mflCode=${String(
+              ev?.event?.mflCode ?? ""
+            )}`
+          );
+        }
+      }
+
+      log.push(
+        `Event fingerprint: facilityCodeFinal=${facilityCodeFinal} eventTypeCounts=${JSON.stringify(
+          builtEventTypeCounts
+        )} createdAtRange=${builtMinCreatedAt ?? "n/a"}..${builtMaxCreatedAt ?? "n/a"}`
+      );
     } finally {
       await etlConn.end();
     }
@@ -539,6 +739,14 @@ export async function POST(req: Request) {
         log,
         payload,
         eventList,
+        pushSummary: {
+          etlRefreshForced: true,
+          facilityCodeFinal,
+          versionFinal,
+          includeEventTypes: Array.from(includeEventTypes),
+          eventTypeCounts: builtEventTypeCounts,
+          createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
+        },
         cbsStatus: lastStatus,
         cbsBody: lastBody
       },

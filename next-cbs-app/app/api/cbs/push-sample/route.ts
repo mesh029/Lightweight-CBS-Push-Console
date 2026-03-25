@@ -290,6 +290,48 @@ export async function POST(req: Request) {
       timestamp
     };
 
+    const visitsRecords = visits.reduce(
+      (sum, v) => sum + (Array.isArray(v?.details) ? v.details.length : 0),
+      0
+    );
+    const bedManagementAgeDetailsRecords = bedManagement.reduce(
+      (sum, bm) =>
+        sum + (Array.isArray(bm?.age_details) ? bm.age_details.length : 0),
+      0
+    );
+
+    const recordsToPush = {
+      // Top-level datasets (count of array entries)
+      wait_time: waitTime.length,
+      waivers: payload.waivers.length,
+      payments: payload.payments.length,
+      diagnosis: payload.diagnosis.length,
+      workload: workload.length,
+      admissions: admissions.length,
+      inventory: payload.inventory.length,
+      billing: payload.billing.length,
+      visits_categories: visits.length,
+      visits_records: visitsRecords,
+      bed_management: bedManagement.length,
+      bed_management_age_details_records: bedManagementAgeDetailsRecords,
+      mortality: payload.mortality.length,
+      staff_count: staffCount.length,
+      // Placeholders that are currently empty (still included for audit)
+      Immunization: payload.Immunization.length,
+      sha_enrollments: 0
+    };
+    const totalRecordsToPush = Object.values(recordsToPush).reduce(
+      (sum, n) => sum + Number(n ?? 0),
+      0
+    );
+
+    log.push(
+      `${logPrefix}: recordsToPush summary=${JSON.stringify({
+        ...recordsToPush,
+        totalRecordsToPush
+      })}`
+    );
+
     log.push(
       `${logPrefix}: POST ${endpointUrl} with mfl_code=${mflCodeFinal}, version=${versionFinal}, timestamp=${timestamp}`
     );
@@ -338,6 +380,13 @@ export async function POST(req: Request) {
           : "Visualization push failed",
         log,
         payload,
+        pushSummary: {
+          mfl_code: mflCodeFinal,
+          version: versionFinal,
+          etlRefreshForced: Boolean(shouldRefresh),
+          recordsToPush,
+          totalRecordsToPush
+        },
         cbsStatus: lastStatus,
         cbsBody: lastBody
       },
