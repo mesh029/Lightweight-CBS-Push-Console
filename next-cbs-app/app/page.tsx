@@ -1822,6 +1822,7 @@ export default function HomePage() {
               {(() => {
                 const vizDetails = (pushResult?.details ?? {}) as any;
                 const vizSummary = vizDetails?.pushSummary ?? null;
+                const vizPayload = vizDetails?.payload ?? null;
                 const caseDetails = (casePushResult?.details ?? {}) as any;
                 const caseSummary = caseDetails?.pushSummary ?? null;
                 const effectiveCaseSummary = caseSummary ?? prePutCaseSummary ?? null;
@@ -1829,29 +1830,94 @@ export default function HomePage() {
                 const effectiveVizTotalRecords =
                   prePutVizRecords?.totalRecordsToPush ?? vizSummary?.totalRecordsToPush ?? null;
 
+                const computeVizRecordsToPush = (payload: any) => {
+                  if (!payload) return null;
+                  const visits = payload.visits ?? [];
+                  const bedManagement = payload.bed_management ?? [];
+                  const recordsToPush = {
+                    wait_time: Array.isArray(payload.wait_time) ? payload.wait_time.length : 0,
+                    waivers: Array.isArray(payload.waivers) ? payload.waivers.length : 0,
+                    payments: Array.isArray(payload.payments) ? payload.payments.length : 0,
+                    diagnosis: Array.isArray(payload.diagnosis) ? payload.diagnosis.length : 0,
+                    workload: Array.isArray(payload.workload) ? payload.workload.length : 0,
+                    admissions: Array.isArray(payload.admissions) ? payload.admissions.length : 0,
+                    inventory: Array.isArray(payload.inventory) ? payload.inventory.length : 0,
+                    billing: Array.isArray(payload.billing) ? payload.billing.length : 0,
+                    visits_categories: Array.isArray(visits) ? visits.length : 0,
+                    visits_records: (Array.isArray(visits) ? visits : []).reduce(
+                      (sum: number, v: any) => sum + (Array.isArray(v?.details) ? v.details.length : 0),
+                      0
+                    ),
+                    bed_management: Array.isArray(bedManagement) ? bedManagement.length : 0,
+                    bed_management_age_details_records: (Array.isArray(bedManagement) ? bedManagement : []).reduce(
+                      (sum: number, bm: any) =>
+                        sum + (Array.isArray(bm?.age_details) ? bm.age_details.length : 0),
+                      0
+                    ),
+                    mortality: Array.isArray(payload.mortality) ? payload.mortality.length : 0,
+                    staff_count: Array.isArray(payload.staff_count) ? payload.staff_count.length : 0,
+                    Immunization: Array.isArray(payload.Immunization) ? payload.Immunization.length : 0,
+                    sha_enrollments: 0
+                  };
+
+                  const totalRecordsToPush = Object.values(recordsToPush).reduce(
+                    (sum: number, n: any) => sum + Number(n ?? 0),
+                    0
+                  );
+
+                  return { recordsToPush, totalRecordsToPush };
+                };
+
+                const vizComputed = computeVizRecordsToPush(vizPayload);
+                const effectiveVizRecordsResolved = prePutVizRecords?.recordsToPush ?? vizSummary?.recordsToPush ?? vizComputed?.recordsToPush ?? null;
+                const effectiveVizTotalRecordsResolved = prePutVizRecords?.totalRecordsToPush ?? vizSummary?.totalRecordsToPush ?? vizComputed?.totalRecordsToPush ?? null;
+
+                const caseComputedSummary =
+                  Array.isArray(caseDetails?.eventList) && caseDetails.eventList.length
+                    ? (() => {
+                        const eventTypeCounts: Record<string, number> = {};
+                        let minCreatedAt: string | null = null;
+                        let maxCreatedAt: string | null = null;
+                        for (const ev of caseDetails.eventList) {
+                          const t = String(ev?.eventType ?? "");
+                          if (!t) continue;
+                          eventTypeCounts[t] = (eventTypeCounts[t] ?? 0) + 1;
+                          const createdAt = String(ev?.event?.createdAt ?? "");
+                          if (createdAt) {
+                            if (minCreatedAt == null || createdAt < minCreatedAt) minCreatedAt = createdAt;
+                            if (maxCreatedAt == null || createdAt > maxCreatedAt) maxCreatedAt = createdAt;
+                          }
+                        }
+                        return { eventTypeCounts, createdAtRange: { min: minCreatedAt, max: maxCreatedAt } };
+                      })()
+                    : null;
+
+                const effectiveCaseSummaryResolved =
+                  caseSummary ?? prePutCaseSummary ?? caseComputedSummary ?? null;
+
                 const renderSelection = () => {
-                  if (!vizSummary && !effectiveVizRecords && !effectiveCaseSummary) return "n/a";
+                  if (!vizSummary && !effectiveVizRecordsResolved && !effectiveCaseSummaryResolved) return "n/a";
 
                   if (payloadStatsView === "vizSummary") return vizSummary ?? "n/a";
                   if (payloadStatsView === "vizRecords")
                     return {
-                      ...((effectiveVizRecords ?? {}) as any),
-                      totalRecordsToPush: effectiveVizTotalRecords
+                      ...((effectiveVizRecordsResolved ?? {}) as any),
+                      totalRecordsToPush: effectiveVizTotalRecordsResolved
                     };
-                  if (payloadStatsView === "caseSummary") return effectiveCaseSummary ?? "n/a";
+                  if (payloadStatsView === "caseSummary") return effectiveCaseSummaryResolved ?? "n/a";
                   if (payloadStatsView === "caseEventTypes")
                     return {
-                      eventTypeCounts: effectiveCaseSummary?.eventTypeCounts ?? {},
-                      createdAtRange: effectiveCaseSummary?.createdAtRange ?? null
+                      eventTypeCounts: effectiveCaseSummaryResolved?.eventTypeCounts ?? {},
+                      createdAtRange: effectiveCaseSummaryResolved?.createdAtRange ?? null
                     };
-                  if (payloadStatsView === "caseFingerprintJson") return effectiveCaseSummary ?? "n/a";
+                  if (payloadStatsView === "caseFingerprintJson") return effectiveCaseSummaryResolved ?? "n/a";
 
                   // both
                   return {
                     visualization: vizSummary ?? null,
-                    case_surveillance: effectiveCaseSummary ?? null,
-                    visualization_records: effectiveVizRecords ?? null,
-                    visualization_totalRecordsToPush: effectiveVizTotalRecords
+                    case_surveillance: effectiveCaseSummaryResolved ?? null,
+                    visualization_records: effectiveVizRecordsResolved ?? null,
+                    visualization_totalRecordsToPush: effectiveVizTotalRecordsResolved
                   };
                 };
 
