@@ -221,11 +221,13 @@ export async function POST(req: Request) {
     maxEligibleForVl?: number;
     maxHeiAt6to8Weeks?: number;
     includeEventTypes?: string[];
+    dryRun?: boolean;
   };
 
   const openmrsDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
   const facilityCodeOverride = body.facilityCodeOverride?.trim() || null;
   const versionOverride = body.versionOverride?.trim() || null;
+  const dryRun = Boolean(body.dryRun);
 
   // Critical safety: always refresh ETL before pushing.
   const shouldRefresh = true;
@@ -756,6 +758,31 @@ export async function POST(req: Request) {
               createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
             })}`
           );
+
+        if (dryRun) {
+          safePushLog("Case-surveillance dryRun=true: skipping token request and PUT push.");
+          finalResult = {
+            ok: true,
+            message: "Case surveillance pre-push audit generated (no push executed)",
+            correlationId,
+            log,
+            payload,
+            eventList,
+            pushSummary: {
+              etlRefreshForced: true,
+              facilityCodeFinal,
+              versionFinal,
+              includeEventTypes: Array.from(includeEventTypes),
+              eventTypeCounts: builtEventTypeCounts,
+              createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
+            },
+            cbsStatus: null,
+            cbsBody: null
+          };
+          emitDone(finalResult);
+          controller.close();
+          return;
+        }
         } finally {
           await etlConn.end();
         }

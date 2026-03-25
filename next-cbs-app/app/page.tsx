@@ -55,6 +55,7 @@ export default function HomePage() {
   const [loadingHealth, setLoadingHealth] = useState(false);
   const [loadingPush, setLoadingPush] = useState(false);
   const [loadingCasePush, setLoadingCasePush] = useState(false);
+  const [loadingCasePreAudit, setLoadingCasePreAudit] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [loadingAutoRun, setLoadingAutoRun] = useState(false);
@@ -746,6 +747,93 @@ export default function HomePage() {
       setLoadingCasePush(false);
     }
   };
+
+  const callCaseSurveillancePreAudit = async (facilityCodeOverride?: string) => {
+    const code = (facilityCodeOverride ?? facilityCode).trim();
+    if (!isFacilityMflValid(code)) return;
+    if (caseEventTypes.length === 0) return;
+
+    setLoadingCasePreAudit(true);
+    try {
+      appendTerminal("Case pre-push audit", [
+        "Generating case fingerprints before push (dry run)..."
+      ]);
+      const dbName = openmrsDbName.trim();
+      const res = await fetch("/api/cbs/push-case-surveillance/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          facilityCodeOverride: code || undefined,
+          openmrsDbNameOverride: dbName || undefined,
+          versionOverride: versionOverride.trim() || undefined,
+          includeEventTypes: caseEventTypes,
+          dryRun: true
+        })
+      });
+
+      const bodyStream = res.body;
+      if (!bodyStream) throw new Error("Case pre-audit stream not available.");
+
+      const reader = bodyStream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (parsed?.type === "log") {
+            const line = String(parsed.line ?? "");
+            appendTerminalLine(line);
+            const marker = "pushSummary BEFORE PUT:";
+            const idx = line.indexOf(marker);
+            if (idx >= 0) {
+              const jsonPart = line.slice(idx + marker.length).trim();
+              try {
+                setPrePutCaseSummary(JSON.parse(jsonPart));
+              } catch {
+                // ignore
+              }
+            }
+          }
+          if (parsed?.type === "done") {
+            finalResult = parsed.result;
+            break;
+          }
+        }
+        if (finalResult) break;
+      }
+
+      if (finalResult?.pushSummary) {
+        setPrePutCaseSummary(finalResult.pushSummary);
+      }
+    } catch (e) {
+      appendTerminal("Case pre-push audit failed", [String(e)]);
+    } finally {
+      setLoadingCasePreAudit(false);
+    }
+  };
+
+  useEffect(() => {
+    if (step !== 3) return;
+    if (loadingPush || loadingCasePush || loadingCasePreAudit) return;
+    if (prePutCaseSummary) return;
+    if (!previewResult?.ok) return;
+    void callCaseSurveillancePreAudit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, previewResult?.ok, facilityCode, openmrsDbName, versionOverride, caseEventTypes.join(",")]);
 
   const pushAll = async () => {
     clearTerminal();
@@ -1625,6 +1713,16 @@ export default function HomePage() {
                 className="btn btn-primary"
               >
                 {loadingPush || loadingCasePush ? "Pushing..." : "Push Visualization + Program Monitoring"}
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await callCaseSurveillancePreAudit();
+                }}
+                disabled={!isFacilityMflValid(facilityCode) || loadingPush || loadingCasePush || loadingCasePreAudit}
+                className="btn btn-secondary"
+              >
+                {loadingCasePreAudit ? "Generating Audit..." : "Refresh Case Audit (No Push)"}
               </button>
               <button
                 type="button"
