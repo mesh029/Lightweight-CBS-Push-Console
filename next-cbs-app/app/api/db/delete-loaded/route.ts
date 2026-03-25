@@ -1,101 +1,99 @@
 import { NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
-import { exec } from "child_process";
+import mysql from "mysql2/promise";
+import { loadDbConfig } from "@lib/config";
 
 export const runtime = "nodejs";
 
-function runCommand(cmd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    exec(cmd, (error, stdout, stderr) => {
-      resolve({
-        code: error ? (error as any).code ?? 1 : 0,
-        stdout,
-        stderr
-      });
-    });
-  });
-}
+type DeleteLoadedRequest = {
+  openmrsDbNameOverride?: string;
+  deleteDumpFile?: boolean;
+};
 
 export async function POST(req: Request) {
+  const log: string[] = [];
   try {
-    const body = (await req.json().catch(() => ({}))) as {
-      openmrsDbNameOverride?: string;
-      deleteDumpFile?: boolean;
-    };
+    const body = (await req.json().catch(() => ({}))) as DeleteLoadedRequest;
+    const dbName = (body.openmrsDbNameOverride || "").trim();
 
-    const dbName = String(body.openmrsDbNameOverride || "").trim();
     if (!dbName) {
       return NextResponse.json(
-        { ok: false, message: "openmrsDbNameOverride is required" },
+        { ok: false, message: "openmrsDbNameOverride is required", log },
         { status: 400 }
       );
     }
-
-    if (!/^openmrs_[0-9]{14}$/.test(dbName)) {
+    if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
       return NextResponse.json(
-        {
-          ok: false,
-          message:
-            "Refusing delete: only timestamped uploaded DB names are allowed (openmrs_YYYYMMDDHHMMSS)."
-        },
+        { ok: false, message: "Invalid openmrsDbNameOverride format", log },
+        { status: 400 }
+      );
+    }
+    if (dbName === "openmrs") {
+      return NextResponse.json(
+        { ok: false, message: "Refusing to delete base 'openmrs' database", log },
         { status: 400 }
       );
     }
 
-    const log: string[] = [];
-    const ts = dbName.replace(/^openmrs_/, "");
-    const uploadsDir = path.join(process.cwd(), "uploaded_dbs");
+    const cfg = loadDbConfig();
+    const conn = await mysql.createConnection({
+      host: cfg.host,
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password
+    });
 
-    log.push(`Dropping database '${dbName}'...`);
-    const dropCmd = `mysql -uroot -ptest -e "DROP DATABASE IF EXISTS ${dbName};"`;
-    const dropRes = await runCommand(dropCmd);
-    log.push(`DROP DATABASE exit code: ${dropRes.code}`);
-    if (dropRes.stderr) log.push(`DROP DATABASE stderr: ${dropRes.stderr.trim()}`);
+    try {
+      log.push(`Dropping database '${dbName}' if it exists...`);
+      await conn.query(`DROP DATABASE IF EXISTS \`${dbName}\`;`);
+      log.push(`DROP DATABASE completed for '${dbName}'.`);
+    } finally {
+      await conn.end();
+    }
 
-    let deletedFiles: string[] = [];
-    if (body.deleteDumpFile !== false) {
-      log.push(`Looking for uploaded dump file(s) matching timestamp '${ts}'...`);
+    let deletedDumpFiles: string[] = [];
+    if (body.deleteDumpFile) {
+      // Imported DB names are openmrs_<YYYYMMDDHHMMSS>, while uploaded file names are
+      // <YYYYMMDDHHMMSS>-<original>.sql. Use that shared timestamp for cleanup.
+      const ts = dbName.startsWith("openmrs_") ? dbName.slice("openmrs_".length) : "";
+      const uploadsDir = path.join(process.cwd(), "uploaded_dbs");
+
       try {
-        const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
-        const matches = entries
-          .filter((e) => e.isFile() && e.name.startsWith(`${ts}-`) && e.name.endsWith(".sql"))
-          .map((e) => e.name);
-
+        const names = await fs.readdir(uploadsDir);
+        const matches = names.filter((n) => (ts ? n.startsWith(`${ts}-`) : false));
         for (const fileName of matches) {
           const fullPath = path.join(uploadsDir, fileName);
           await fs.unlink(fullPath);
-          deletedFiles.push(fileName);
+          deletedDumpFiles.push(fileName);
         }
-      } catch {
-        // If uploaded_dbs does not exist or cannot be read, continue; DB drop is still useful cleanup.
-      }
-      if (deletedFiles.length) {
-        log.push(`Deleted dump file(s): ${deletedFiles.join(", ")}`);
-      } else {
-        log.push("No matching dump file found to delete.");
+        if (matches.length === 0) {
+          log.push("No matching dump file found for this DB timestamp.");
+        } else {
+          log.push(`Deleted ${matches.length} matching dump file(s).`);
+        }
+      } catch (e) {
+        log.push(`Dump file cleanup skipped/failed: ${String(e)}`);
       }
     }
 
-    const ok = dropRes.code === 0;
     return NextResponse.json(
       {
-        ok,
-        message: ok
-          ? `Deleted loaded DB '${dbName}'${deletedFiles.length ? " and matching dump file(s)." : "."}`
-          : `Failed to drop DB '${dbName}' (see log).`,
+        ok: true,
+        message: `Deleted loaded DB '${dbName}'`,
         dbName,
-        deletedDumpFiles: deletedFiles,
+        deletedDumpFiles,
         log
       },
-      { status: ok ? 200 : 500 }
+      { status: 200 }
     );
   } catch (err) {
     return NextResponse.json(
       {
         ok: false,
-        message: "Error deleting loaded OpenMRS DB/dump",
-        error: String(err)
+        message: "Failed to delete loaded DB",
+        error: String(err),
+        log
       },
       { status: 500 }
     );

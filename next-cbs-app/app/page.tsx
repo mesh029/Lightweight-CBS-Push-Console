@@ -994,7 +994,7 @@ export default function HomePage() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  disabled={!openmrsDbName.trim() || loadingHealth}
+                  disabled={!openmrsDbName.trim() || loadingHealth || deletingLoadedDb || uploading}
                   onClick={callHealth}
                 >
                   {loadingHealth ? "Checking..." : "Run Health Check"}
