@@ -621,7 +621,7 @@ export default function HomePage() {
       appendTerminal("Case surveillance push", ["Starting case surveillance push..."]);
       const dbName = openmrsDbName.trim();
       const shouldSkipEtl = Boolean(etlRanDbName && dbName && etlRanDbName === dbName);
-      const res = await fetch("/api/cbs/push-case-surveillance", {
+      const res = await fetch("/api/cbs/push-case-surveillance/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -632,24 +632,70 @@ export default function HomePage() {
           includeEventTypes: caseEventTypes
         })
       });
-      const data = await res.json();
-      const cbsStatus = (data as any)?.cbsStatus;
-      const cbsBody = (data as any)?.cbsBody;
+
+      const bodyStream = res.body;
+      if (!bodyStream) {
+        throw new Error("Case surveillance push stream not available.");
+      }
+
+      const reader = bodyStream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalResult: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            continue;
+          }
+
+          if (parsed?.type === "log") {
+            appendTerminalLine(String(parsed.line ?? ""));
+          }
+          if (parsed?.type === "done") {
+            finalResult = parsed.result;
+            break;
+          }
+        }
+
+        if (finalResult) break;
+      }
+
+      if (!finalResult) {
+        throw new Error("Case surveillance push did not return a final result from the stream.");
+      }
+
+      const cbsStatus = finalResult?.cbsStatus;
+      const cbsBody = finalResult?.cbsBody;
       let message =
-        (data as any)?.message ??
-        (res.ok ? "Case surveillance push OK" : "Case surveillance push failed");
-      if (!res.ok && cbsStatus != null) {
+        finalResult?.message ??
+        (finalResult?.ok ? "Case surveillance push OK" : "Case surveillance push failed");
+      if (!finalResult?.ok && cbsStatus != null) {
         message += ` (CS HTTP ${cbsStatus})`;
       }
-      if (!res.ok && cbsBody != null) {
+      if (!finalResult?.ok && cbsBody != null) {
         message += `: ${String(cbsBody).slice(0, 300)}`;
       }
+
       setCasePushResult({
-        ok: res.ok,
+        ok: Boolean(finalResult?.ok),
         message,
-        details: data
+        details: finalResult
       });
-      appendTerminal("Case surveillance push", (data.log ?? []) as string[]);
+
+      // Keep ETL bookkeeping aligned (even though the server now forces ETL for safety).
+      if (finalResult?.ok) setEtlRanDbName(dbName);
     } catch (e) {
       setCasePushResult({ ok: false, message: String(e) });
       appendTerminal("Case surveillance push failed", [String(e)]);
