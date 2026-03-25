@@ -50,6 +50,13 @@ export default function HomePage() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [versionOverride, setVersionOverride] = useState<string>("");
+  const [caseEventTypes, setCaseEventTypes] = useState<string[]>([
+    "roll_call",
+    "new_case",
+    "linked_case",
+    "eligible_for_vl",
+    "hei_at_6_to_8_weeks"
+  ]);
   const [openmrsFile, setOpenmrsFile] = useState<File | null>(null);
   const [facilityCode, setFacilityCode] = useState<string>("");
   const [facilityName, setFacilityName] = useState<string>("");
@@ -479,6 +486,13 @@ export default function HomePage() {
       });
       return;
     }
+    if (caseEventTypes.length === 0) {
+      setCasePushResult({
+        ok: false,
+        message: "Select at least one case event type before pushing Program Monitoring."
+      });
+      return;
+    }
     setLoadingCasePush(true);
     setCasePushResult(null);
     try {
@@ -492,7 +506,8 @@ export default function HomePage() {
           facilityCodeOverride: facilityCode.trim() || undefined,
           openmrsDbNameOverride: dbName || undefined,
           versionOverride: versionOverride.trim() || undefined,
-          skipEtlRefresh: shouldSkipEtl
+          skipEtlRefresh: shouldSkipEtl,
+          includeEventTypes: caseEventTypes
         })
       });
       const data = await res.json();
@@ -584,6 +599,13 @@ export default function HomePage() {
         setEtlRanDbName(null);
         setStep(0);
         setVersionOverride("");
+        setCaseEventTypes([
+          "roll_call",
+          "new_case",
+          "linked_case",
+          "eligible_for_vl",
+          "hei_at_6_to_8_weeks"
+        ]);
         try {
           window.localStorage.removeItem(lastOpenmrsDbKey);
         } catch {
@@ -1261,6 +1283,37 @@ export default function HomePage() {
               <p className="card-text" style={{ marginTop: "0.25rem" }}>
                 Pushes the full Program Monitoring batch (roll_call + new_case + linked_case + eligible_for_vl + hei_at_6_to_8_weeks).
               </p>
+              <div className="field" style={{ marginTop: "0.6rem" }}>
+                <label className="field-label">Case event types to include</label>
+                <div style={{ display: "flex", gap: "0.8rem", flexWrap: "wrap", marginTop: "0.35rem" }}>
+                  {[
+                    "roll_call",
+                    "new_case",
+                    "linked_case",
+                    "eligible_for_vl",
+                    "hei_at_6_to_8_weeks"
+                  ].map((type) => (
+                    <label key={type} style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
+                      <input
+                        type="checkbox"
+                        checked={caseEventTypes.includes(type)}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setCaseEventTypes((prev) => {
+                            if (checked) return Array.from(new Set([...prev, type]));
+                            return prev.filter((t) => t !== type);
+                          });
+                        }}
+                        disabled={loadingPush || loadingCasePush}
+                      />
+                      <span>{type}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="field-help" style={{ marginTop: "0.3rem" }}>
+                  Payload uses ETL-derived records for selected types only (not all patients).
+                </p>
+              </div>
               {casePushResult && (
                 <div style={{ marginTop: "0.6rem" }}>
                   <pre className="card-output">

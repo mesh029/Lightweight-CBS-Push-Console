@@ -75,6 +75,7 @@ export async function POST(req: Request) {
       maxLinkedCases?: number;
       maxEligibleForVl?: number;
       maxHeiAt6to8Weeks?: number;
+      includeEventTypes?: string[];
     };
 
     const openmrsDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
@@ -94,6 +95,31 @@ export async function POST(req: Request) {
       typeof body.maxHeiAt6to8Weeks === "number" && body.maxHeiAt6to8Weeks > 0
         ? body.maxHeiAt6to8Weeks
         : 0;
+
+    const allowedEventTypes = new Set([
+      "roll_call",
+      "new_case",
+      "linked_case",
+      "eligible_for_vl",
+      "hei_at_6_to_8_weeks"
+    ]);
+    const requestedTypes = Array.isArray(body.includeEventTypes)
+      ? body.includeEventTypes
+          .map((t) => String(t).trim())
+          .filter((t) => allowedEventTypes.has(t))
+      : [];
+    const includeEventTypes = new Set(
+      requestedTypes.length > 0
+        ? requestedTypes
+        : ["roll_call", "new_case", "linked_case", "eligible_for_vl", "hei_at_6_to_8_weeks"]
+    );
+
+    if (includeEventTypes.size === 0) {
+      return NextResponse.json(
+        { ok: false, message: "No valid event types selected for case surveillance push", log },
+        { status: 400 }
+      );
+    }
 
     if (shouldRefresh) {
       log.push(
@@ -141,17 +167,19 @@ export async function POST(req: Request) {
       database: "kenyaemr_etl"
     });
 
-    const eventList: any[] = [
-      {
+    const eventList: any[] = [];
+    if (includeEventTypes.has("roll_call")) {
+      eventList.push({
         eventType: "roll_call",
         event: { mflCode: facilityCodeFinal, emrVersion: versionFinal }
-      }
-    ];
+      });
+    }
 
     try {
       log.push("Building case-surveillance events from kenyaemr_etl (ETL outputs)...");
 
-      const [newCaseRows] = await etlConn.query(
+      if (includeEventTypes.has("new_case")) {
+        const [newCaseRows] = await etlConn.query(
         `
         SELECT
           t.patient_id AS patientPk,
@@ -178,35 +206,39 @@ export async function POST(req: Request) {
           ON addr.patient_id = t.patient_id
           AND (addr.voided = 0 OR addr.voided IS NULL)
         `
-      );
+        );
 
-    const newCaseArr = (Array.isArray(newCaseRows) ? newCaseRows : []) as any[];
-    const newCaseArrLimited = maxNewCases > 0 ? newCaseArr.slice(0, maxNewCases) : newCaseArr;
-    log.push(
-      `Case event building: new_case candidates=${newCaseArr.length}, sent=${newCaseArrLimited.length} (maxNewCases=${maxNewCases})`
-    );
+        const newCaseArr = (Array.isArray(newCaseRows) ? newCaseRows : []) as any[];
+        const newCaseArrLimited = maxNewCases > 0 ? newCaseArr.slice(0, maxNewCases) : newCaseArr;
+        log.push(
+          `Case event building: new_case candidates=${newCaseArr.length}, sent=${newCaseArrLimited.length} (maxNewCases=${maxNewCases})`
+        );
 
-    for (const r of newCaseArrLimited) {
-        eventList.push({
-          eventType: "new_case",
-          client: {
-            county: r.county ?? "",
-            subCounty: r.subCounty ?? "",
-            ward: r.ward ?? "",
-            patientPk: String(r.patientPk ?? ""),
-            sex: normalizeSex(r.sex),
-            dob: r.dob ?? ""
-          },
-          event: {
-            mflCode: facilityCodeFinal,
-            createdAt: r.createdAt ?? null,
-            updatedAt: r.updatedAt ?? null,
-            positiveHivTestDate: r.positiveHivTestDate ?? null
-          }
-        });
-    }
+        for (const r of newCaseArrLimited) {
+          eventList.push({
+            eventType: "new_case",
+            client: {
+              county: r.county ?? "",
+              subCounty: r.subCounty ?? "",
+              ward: r.ward ?? "",
+              patientPk: String(r.patientPk ?? ""),
+              sex: normalizeSex(r.sex),
+              dob: r.dob ?? ""
+            },
+            event: {
+              mflCode: facilityCodeFinal,
+              createdAt: r.createdAt ?? null,
+              updatedAt: r.updatedAt ?? null,
+              positiveHivTestDate: r.positiveHivTestDate ?? null
+            }
+          });
+        }
+      } else {
+        log.push("Case event building: new_case skipped by selection.");
+      }
 
-      const [linkedCaseRows] = await etlConn.query(
+      if (includeEventTypes.has("linked_case")) {
+        const [linkedCaseRows] = await etlConn.query(
         `
         SELECT
           e.patient_id AS patientPk,
@@ -227,39 +259,43 @@ export async function POST(req: Request) {
         WHERE (e.voided = 0 OR e.voided IS NULL)
           AND e.date_started_art_at_transferring_facility IS NOT NULL
         `
-      );
+        );
 
-    const linkedCaseArr = (Array.isArray(linkedCaseRows) ? linkedCaseRows : []) as any[];
-    const linkedCaseArrLimited =
-      maxLinkedCases > 0 ? linkedCaseArr.slice(0, maxLinkedCases) : linkedCaseArr;
-    log.push(
-      `Case event building: linked_case candidates=${linkedCaseArr.length}, sent=${linkedCaseArrLimited.length} (maxLinkedCases=${maxLinkedCases})`
-    );
+        const linkedCaseArr = (Array.isArray(linkedCaseRows) ? linkedCaseRows : []) as any[];
+        const linkedCaseArrLimited =
+          maxLinkedCases > 0 ? linkedCaseArr.slice(0, maxLinkedCases) : linkedCaseArr;
+        log.push(
+          `Case event building: linked_case candidates=${linkedCaseArr.length}, sent=${linkedCaseArrLimited.length} (maxLinkedCases=${maxLinkedCases})`
+        );
 
-    for (const r of linkedCaseArrLimited) {
-        eventList.push({
-          eventType: "linked_case",
-          client: {
-            county: r.county ?? "",
-            subCounty: r.subCounty ?? "",
-            ward: r.ward ?? "",
-            patientPk: String(r.patientPk ?? ""),
-            sex: normalizeSex(r.sex),
-            dob: r.dob ?? ""
-          },
-          event: {
-            mflCode: facilityCodeFinal,
-            createdAt: r.createdAt ?? null,
-            updatedAt: r.updatedAt ?? null,
-            artStartDate: r.artStartDate ?? null,
-            positiveHivTestDate: null
-          }
-        });
-    }
+        for (const r of linkedCaseArrLimited) {
+          eventList.push({
+            eventType: "linked_case",
+            client: {
+              county: r.county ?? "",
+              subCounty: r.subCounty ?? "",
+              ward: r.ward ?? "",
+              patientPk: String(r.patientPk ?? ""),
+              sex: normalizeSex(r.sex),
+              dob: r.dob ?? ""
+            },
+            event: {
+              mflCode: facilityCodeFinal,
+              createdAt: r.createdAt ?? null,
+              updatedAt: r.updatedAt ?? null,
+              artStartDate: r.artStartDate ?? null,
+              positiveHivTestDate: null
+            }
+          });
+        }
+      } else {
+        log.push("Case event building: linked_case skipped by selection.");
+      }
 
-    // Phase 4 expansion: include eligible_for_vl and HEI-at-6-to-8-weeks events
-    // so we stop “only linked_case” payload behavior on the CS dashboards.
-    const [eligibleVlRows] = await etlConn.query(
+      // Phase 4 expansion: include eligible_for_vl and HEI-at-6-to-8-weeks events
+      // so we stop “only linked_case” payload behavior on the CS dashboards.
+      if (includeEventTypes.has("eligible_for_vl")) {
+        const [eligibleVlRows] = await etlConn.query(
       `
       SELECT
         v.patient_id AS patientPk,
@@ -323,44 +359,48 @@ export async function POST(req: Request) {
             AND ((v.lab_test = 1305 AND CAST(v.vl_result AS UNSIGNED) = 1302) OR CAST(v.vl_result AS UNSIGNED) < 200))
         );
       `
-    );
+        );
 
-    const eligibleVlArr = (Array.isArray(eligibleVlRows) ? eligibleVlRows : []) as any[];
-    const eligibleVlArrLimited =
-      maxEligibleForVl > 0 ? eligibleVlArr.slice(0, maxEligibleForVl) : eligibleVlArr;
-    log.push(
-      `Case event building: eligible_for_vl candidates=${eligibleVlArr.length}, sent=${eligibleVlArrLimited.length} (maxEligibleForVl=${maxEligibleForVl})`
-    );
+        const eligibleVlArr = (Array.isArray(eligibleVlRows) ? eligibleVlRows : []) as any[];
+        const eligibleVlArrLimited =
+          maxEligibleForVl > 0 ? eligibleVlArr.slice(0, maxEligibleForVl) : eligibleVlArr;
+        log.push(
+          `Case event building: eligible_for_vl candidates=${eligibleVlArr.length}, sent=${eligibleVlArrLimited.length} (maxEligibleForVl=${maxEligibleForVl})`
+        );
 
-    for (const r of eligibleVlArrLimited) {
-      eventList.push({
-        eventType: "eligible_for_vl",
-        client: {
-          county: r.county ?? "",
-          subCounty: r.subCounty ?? "",
-          ward: r.ward ?? "",
-          patientPk: String(r.patientPk ?? ""),
-          sex: normalizeSex(r.sex),
-          dob: r.dob ?? ""
-        },
-        event: {
-          mflCode: facilityCodeFinal,
-          createdAt: r.createdAt ?? null,
-          updatedAt: r.updatedAt ?? null,
-          positiveHivTestDate: r.positiveHivTestDate ?? null,
-          artStartDate: r.artStartDate ?? null,
-          pregnancyStatus: r.pregnancyStatus ?? null,
-          breastFeedingStatus: r.breastFeedingStatus ?? null,
-          lastVlOrderDate: r.lastVlOrderDate ?? null,
-          lastVlResults: r.lastVlResults ?? null,
-          lastVlResultsDate: r.lastVlResultsDate ?? null,
-          visitDate: r.visitDate ?? null,
-          vlOrderReason: r.vlOrderReason ?? null
+        for (const r of eligibleVlArrLimited) {
+          eventList.push({
+            eventType: "eligible_for_vl",
+            client: {
+              county: r.county ?? "",
+              subCounty: r.subCounty ?? "",
+              ward: r.ward ?? "",
+              patientPk: String(r.patientPk ?? ""),
+              sex: normalizeSex(r.sex),
+              dob: r.dob ?? ""
+            },
+            event: {
+              mflCode: facilityCodeFinal,
+              createdAt: r.createdAt ?? null,
+              updatedAt: r.updatedAt ?? null,
+              positiveHivTestDate: r.positiveHivTestDate ?? null,
+              artStartDate: r.artStartDate ?? null,
+              pregnancyStatus: r.pregnancyStatus ?? null,
+              breastFeedingStatus: r.breastFeedingStatus ?? null,
+              lastVlOrderDate: r.lastVlOrderDate ?? null,
+              lastVlResults: r.lastVlResults ?? null,
+              lastVlResultsDate: r.lastVlResultsDate ?? null,
+              visitDate: r.visitDate ?? null,
+              vlOrderReason: r.vlOrderReason ?? null
+            }
+          });
         }
-      });
-    }
+      } else {
+        log.push("Case event building: eligible_for_vl skipped by selection.");
+      }
 
-    const [heiAt6to8Rows] = await etlConn.query(
+      if (includeEventTypes.has("hei_at_6_to_8_weeks")) {
+        const [heiAt6to8Rows] = await etlConn.query(
       `
       SELECT
         h.patient_id AS patientPk,
@@ -380,34 +420,37 @@ export async function POST(req: Request) {
         AND (addr.voided = 0 OR addr.voided IS NULL)
       WHERE h.followup_type = 5622;
       `
-    );
+        );
 
-    const heiAt6to8Arr = (Array.isArray(heiAt6to8Rows) ? heiAt6to8Rows : []) as any[];
-    const heiAt6to8ArrLimited =
-      maxHeiAt6to8Weeks > 0 ? heiAt6to8Arr.slice(0, maxHeiAt6to8Weeks) : heiAt6to8Arr;
-    log.push(
-      `Case event building: hei_at_6_to_8_weeks candidates=${heiAt6to8Arr.length}, sent=${heiAt6to8ArrLimited.length} (maxHeiAt6to8Weeks=${maxHeiAt6to8Weeks})`
-    );
+        const heiAt6to8Arr = (Array.isArray(heiAt6to8Rows) ? heiAt6to8Rows : []) as any[];
+        const heiAt6to8ArrLimited =
+          maxHeiAt6to8Weeks > 0 ? heiAt6to8Arr.slice(0, maxHeiAt6to8Weeks) : heiAt6to8Arr;
+        log.push(
+          `Case event building: hei_at_6_to_8_weeks candidates=${heiAt6to8Arr.length}, sent=${heiAt6to8ArrLimited.length} (maxHeiAt6to8Weeks=${maxHeiAt6to8Weeks})`
+        );
 
-    for (const r of heiAt6to8ArrLimited) {
-      eventList.push({
-        eventType: "hei_at_6_to_8_weeks",
-        client: {
-          county: r.county ?? "",
-          subCounty: r.subCounty ?? "",
-          ward: r.ward ?? "",
-          patientPk: String(r.patientPk ?? ""),
-          sex: normalizeSex(r.sex),
-          dob: r.dob ?? ""
-        },
-        event: {
-          mflCode: facilityCodeFinal,
-          createdAt: r.createdAt ?? null,
-          updatedAt: r.updatedAt ?? null,
-          heiId: r.heiId ?? null
+        for (const r of heiAt6to8ArrLimited) {
+          eventList.push({
+            eventType: "hei_at_6_to_8_weeks",
+            client: {
+              county: r.county ?? "",
+              subCounty: r.subCounty ?? "",
+              ward: r.ward ?? "",
+              patientPk: String(r.patientPk ?? ""),
+              sex: normalizeSex(r.sex),
+              dob: r.dob ?? ""
+            },
+            event: {
+              mflCode: facilityCodeFinal,
+              createdAt: r.createdAt ?? null,
+              updatedAt: r.updatedAt ?? null,
+              heiId: r.heiId ?? null
+            }
+          });
         }
-      });
-    }
+      } else {
+        log.push("Case event building: hei_at_6_to_8_weeks skipped by selection.");
+      }
 
       log.push(`Built case-surveillance eventList size=${eventList.length}.`);
     } finally {
@@ -446,7 +489,9 @@ export async function POST(req: Request) {
     }
 
     log.push(
-      `Pushing case surveillance eventList via HTTP PUT to ${endpointUrl} (includes roll_call + new_case + linked_case + eligible_for_vl + hei_at_6_to_8_weeks)...`
+      `Pushing case surveillance eventList via HTTP PUT to ${endpointUrl} (selected event types: ${Array.from(
+        includeEventTypes
+      ).join(", ")})...`
     );
 
     const headers: Record<string, string> = {
