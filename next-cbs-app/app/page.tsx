@@ -44,6 +44,9 @@ export default function HomePage() {
   const [uploadResult, setUploadResult] = useState<ApiResult | null>(null);
   const [etlResult, setEtlResult] = useState<ApiResult | null>(null);
   const [etlRanDbName, setEtlRanDbName] = useState<string | null>(null);
+  const [payloadStatsView, setPayloadStatsView] = useState<
+    "both" | "vizSummary" | "vizRecords" | "caseSummary" | "caseEventTypes" | "caseFingerprintJson"
+  >("both");
   const [loadingHealth, setLoadingHealth] = useState(false);
   const [loadingPush, setLoadingPush] = useState(false);
   const [loadingCasePush, setLoadingCasePush] = useState(false);
@@ -1782,55 +1785,50 @@ export default function HomePage() {
                 const caseDetails = (casePushResult?.details ?? {}) as any;
                 const caseSummary = caseDetails?.pushSummary ?? null;
 
+                const renderSelection = () => {
+                  if (!vizSummary && !caseSummary) return "n/a";
+
+                  if (payloadStatsView === "vizSummary") return vizSummary ?? "n/a";
+                  if (payloadStatsView === "vizRecords")
+                    return vizSummary?.recordsToPush ?? "n/a";
+                  if (payloadStatsView === "caseSummary") return caseSummary ?? "n/a";
+                  if (payloadStatsView === "caseEventTypes")
+                    return {
+                      eventTypeCounts: caseSummary?.eventTypeCounts ?? {},
+                      createdAtRange: caseSummary?.createdAtRange ?? null
+                    };
+                  if (payloadStatsView === "caseFingerprintJson") return caseSummary ?? "n/a";
+
+                  // both
+                  return {
+                    visualization: vizSummary ?? null,
+                    case_surveillance: caseSummary ?? null
+                  };
+                };
+
                 return (
-                  <div style={{ display: "flex", gap: "0.9rem", flexWrap: "wrap" }}>
-                    {vizSummary && (
-                      <div style={{ minWidth: 320, flex: "1 1 320px" }}>
-                        <pre className="card-output">
-                          <strong>Visualization</strong>
-                          {"\n"}
-                          Facility: {String(vizSummary.mfl_code ?? "n/a")}
-                          {"\n"}Version: {String(vizSummary.version ?? "n/a")}
-                          {"\n"}ETL forced: {String(Boolean(vizSummary.etlRefreshForced))}
-                          {"\n"}Total records to push:{" "}
-                          {String(vizSummary.totalRecordsToPush ?? "n/a")}
-                        </pre>
-                        <details style={{ marginTop: "0.4rem" }}>
-                          <summary>recordsToPush breakdown</summary>
-                          <pre className="card-output" style={{ marginTop: "0.5rem" }}>
-                            {JSON.stringify(vizSummary.recordsToPush ?? {}, null, 2)}
-                          </pre>
-                        </details>
-                      </div>
-                    )}
+                  <div style={{ marginTop: "0.2rem" }}>
+                    <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
+                      <label style={{ fontWeight: 600 }}>Payload stats dropdown</label>
+                      <select
+                        value={payloadStatsView}
+                        onChange={(e) => setPayloadStatsView(e.target.value as any)}
+                        style={{ padding: "0.5rem" }}
+                      >
+                        <option value="both">Both (Visualization + Case surveillance)</option>
+                        <option value="vizSummary">Visualization pushSummary</option>
+                        <option value="vizRecords">Visualization recordsToPush</option>
+                        <option value="caseSummary">Case surveillance pushSummary</option>
+                        <option value="caseEventTypes">Case eventTypeCounts + createdAtRange</option>
+                        <option value="caseFingerprintJson">Case fingerprint (full JSON)</option>
+                      </select>
+                    </div>
 
-                    {caseSummary && (
-                      <div style={{ minWidth: 320, flex: "1 1 320px" }}>
-                        <pre className="card-output">
-                          <strong>Case surveillance</strong>
-                          {"\n"}Facility: {String(caseSummary.facilityCodeFinal ?? "n/a")}
-                          {"\n"}Version: {String(caseSummary.versionFinal ?? "n/a")}
-                          {"\n"}ETL forced: {String(Boolean(caseSummary.etlRefreshForced))}
-                          {"\n"}Event types included:{" "}
-                          {Array.isArray(caseSummary.includeEventTypes)
-                            ? caseSummary.includeEventTypes.join(", ")
-                            : "n/a"}
-                        </pre>
-
-                        <pre className="card-output" style={{ marginTop: "0.5rem" }}>
-                          <strong>eventTypeCounts</strong>
-                          {"\n"}
-                          {JSON.stringify(caseSummary.eventTypeCounts ?? {}, null, 2)}
-                        </pre>
-
-                        <pre className="card-output" style={{ marginTop: "0.5rem" }}>
-                          <strong>createdAtRange</strong>
-                          {"\n"}
-                          {String(caseSummary.createdAtRange?.min ?? "n/a")}..{" "}
-                          {String(caseSummary.createdAtRange?.max ?? "n/a")}
-                        </pre>
-                      </div>
-                    )}
+                    <pre className="card-output" style={{ marginTop: "0.6rem" }}>
+                      {typeof renderSelection() === "string"
+                        ? renderSelection()
+                        : JSON.stringify(renderSelection(), null, 2)}
+                    </pre>
                   </div>
                 );
               })()}
