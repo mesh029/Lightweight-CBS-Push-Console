@@ -51,6 +51,12 @@ export default function HomePage() {
   const [uploading, setUploading] = useState(false);
   const [loadingAutoRun, setLoadingAutoRun] = useState(false);
   const [versionOverride, setVersionOverride] = useState<string>("");
+
+  // Dump storage cleanup (uploaded_dbs/) so you can free disk space safely.
+  const [dumpStorage, setDumpStorage] = useState<any>(null);
+  const [loadingDumpStorage, setLoadingDumpStorage] = useState(false);
+  const [cleanupOrphanDumpsLoading, setCleanupOrphanDumpsLoading] = useState(false);
+  const [orphanCleanupResult, setOrphanCleanupResult] = useState<ApiResult | null>(null);
   const [caseEventTypes, setCaseEventTypes] = useState<string[]>([
     "roll_call",
     "new_case",
@@ -94,6 +100,14 @@ export default function HomePage() {
     setTerminalLines((prev) => [...prev, line]);
   };
 
+  const formatBytes = (bytes: number | null | undefined) => {
+    if (bytes == null || !Number.isFinite(bytes)) return "n/a";
+    const gb = bytes / 1024 / 1024 / 1024;
+    if (gb >= 1) return `${gb.toFixed(2)} GB`;
+    const mb = bytes / 1024 / 1024;
+    return `${mb.toFixed(1)} MB`;
+  };
+
   // If the user previously uploaded/imported a DB, let them reuse it without re-uploading.
   // We only prompt on first load of the page.
   useEffect(() => {
@@ -111,6 +125,58 @@ export default function HomePage() {
     setOpenmrsDbName(last);
     clearTerminal();
     appendTerminal("Cache", [`Loaded OpenMRS DB from local cache: ${last}`]);
+  }, []);
+
+  const refreshDumpStorage = async () => {
+    setLoadingDumpStorage(true);
+    setOrphanCleanupResult(null);
+    try {
+      const res = await fetch("/api/db/list-dumps");
+      const data = await res.json();
+      if (!res.ok || !data?.ok) {
+        setDumpStorage(data ?? { ok: false, message: "Failed to load dump storage" });
+        return;
+      }
+      setDumpStorage(data);
+    } catch (e) {
+      setDumpStorage({ ok: false, message: String(e) });
+    } finally {
+      setLoadingDumpStorage(false);
+    }
+  };
+
+  const cleanupOrphanDumps = async () => {
+    const orphanCount = Number(dumpStorage?.orphanCount ?? 0);
+    const ok = window.confirm(
+      `Delete ${orphanCount} orphan dump file(s) from uploaded_dbs/?\n\nThis deletes dump files whose timestamps do not map to any existing openmrs_<timestamp> database.`
+    );
+    if (!ok) return;
+
+    setCleanupOrphanDumpsLoading(true);
+    setOrphanCleanupResult(null);
+    try {
+      const res = await fetch("/api/db/cleanup-orphan-dumps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun: false })
+      });
+      const data = await res.json();
+      setOrphanCleanupResult({
+        ok: Boolean(res.ok) && Boolean(data?.ok),
+        message: data?.message ?? (res.ok ? "Cleanup finished" : "Cleanup failed"),
+        details: data
+      });
+      await refreshDumpStorage();
+    } catch (e) {
+      setOrphanCleanupResult({ ok: false, message: String(e) });
+    } finally {
+      setCleanupOrphanDumpsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshDumpStorage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Step mapping:
@@ -193,7 +259,7 @@ export default function HomePage() {
       // This lets users proceed without typing the MFL manually.
       const detectedFacilityName = String(data.facilityName ?? "").trim();
       const shouldAutoFix =
-        needsMflInput && detectedFacilityName.length > 0 && !isFacilityMflValid(facilityCode);
+        needsMflInput && detectedFacilityName.length > 0 && !isFacilityMflValid(mflFromDetect);
 
       if (shouldAutoFix) {
         try {
@@ -381,9 +447,9 @@ export default function HomePage() {
     }
   };
 
-  const callPush = async () => {
+  const callPush = async (facilityCodeOverride?: string) => {
     clearTerminal();
-    const code = facilityCode.trim();
+    const code = (facilityCodeOverride ?? facilityCode).trim();
     if (!isFacilityMflValid(code)) {
       setPushResult({
         ok: false,
@@ -401,7 +467,7 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          facilityCodeOverride: facilityCode.trim() || undefined,
+          facilityCodeOverride: code || undefined,
           openmrsDbNameOverride: dbName || undefined,
           versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl
@@ -478,9 +544,9 @@ export default function HomePage() {
     }
   };
 
-  const callPreview = async (): Promise<boolean> => {
+  const callPreview = async (facilityCodeOverride?: string): Promise<boolean> => {
     clearTerminal();
-    const code = facilityCode.trim();
+    const code = (facilityCodeOverride ?? facilityCode).trim();
     if (!isFacilityMflValid(code)) {
       setPreviewResult({
         ok: false,
@@ -501,7 +567,7 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          facilityCodeOverride: facilityCode.trim() || undefined,
+          facilityCodeOverride: code || undefined,
           openmrsDbNameOverride: dbName || undefined,
           versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl
@@ -532,9 +598,9 @@ export default function HomePage() {
     }
   };
 
-  const callCaseSurveillancePush = async () => {
+  const callCaseSurveillancePush = async (facilityCodeOverride?: string) => {
     clearTerminal();
-    const code = facilityCode.trim();
+    const code = (facilityCodeOverride ?? facilityCode).trim();
     if (!isFacilityMflValid(code)) {
       setCasePushResult({
         ok: false,
@@ -559,7 +625,7 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          facilityCodeOverride: facilityCode.trim() || undefined,
+          facilityCodeOverride: code || undefined,
           openmrsDbNameOverride: dbName || undefined,
           versionOverride: versionOverride.trim() || undefined,
           skipEtlRefresh: shouldSkipEtl,
@@ -684,15 +750,98 @@ export default function HomePage() {
       // runEtlAndHealth() also runs facility detection and will auto-fix MFL when possible.
       await runEtlAndHealth(dbName);
 
+      // If facility.mflcode is still invalid/placeholder, prompt (or resolve via Nyamira mapping) before continuing.
+      const ensureValidFacilityMfl = async (): Promise<string> => {
+        const current = (facilityCode ?? "").trim();
+        if (isFacilityMflValid(current)) return current;
+
+        appendTerminal("Auto MFL fix", ["Facility MFL is invalid. Re-detecting and resolving..."]);
+
+        const detRes = await fetch("/api/facility/detect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ openmrsDbNameOverride: dbName })
+        });
+        const detData = await detRes.json();
+
+        const facilityNameDetected = String(detData?.facilityName ?? "").trim();
+        const mflFromDetect = String(detData?.facilityMflCode ?? "").trim();
+        const needsMflInput = Boolean(detData?.needsMflInput);
+
+        // Try Nyamira mapping if the facility name looks usable and the detected MFL is invalid.
+        if (!isFacilityMflValid(mflFromDetect) && facilityNameDetected) {
+          appendTerminal("Auto MFL fix", [
+            `Mapping detected facility '${facilityNameDetected}' -> Nyamira MFL...`
+          ]);
+
+          const resolveRes = await fetch("/api/facility/resolve-mfl", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ facilityName: facilityNameDetected, county: "NYAMIRA" })
+          });
+          const resolved = await resolveRes.json();
+
+          if (resolveRes.ok && resolved?.code && isFacilityMflValid(String(resolved.code))) {
+            const newMfl = String(resolved.code);
+            appendTerminal("Auto MFL update", [
+              `Resolved '${facilityNameDetected}' -> ${newMfl}. Updating OpenMRS/ETL...`
+            ]);
+            const updRes = await fetch("/api/facility/update-mfl", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ newMfl, openmrsDbNameOverride: dbName })
+            });
+            const updData = await updRes.json();
+            appendTerminal("Auto MFL update", (updData?.log ?? []) as string[]);
+
+            setFacilityCode(newMfl);
+            setDetectedMflCode(newMfl);
+            setMflNeedsInput(false);
+            setMflSource("nyamira_csv");
+            return newMfl;
+          }
+        }
+
+        // If mapping didn't work, ask the user to enter the correct MFL during auto-run.
+        if (!needsMflInput && isFacilityMflValid(mflFromDetect)) {
+          return mflFromDetect;
+        }
+
+        const promptLabel = facilityNameDetected
+          ? `Enter the correct Facility MFL for '${facilityNameDetected}' (numeric):`
+          : "Enter the correct Facility MFL code for auto-run (numeric):";
+        const entered = window.prompt(promptLabel, "");
+        const finalMfl = (entered ?? "").trim();
+
+        if (!isFacilityMflValid(finalMfl)) {
+          throw new Error("Auto run cancelled: invalid/missing MFL code.");
+        }
+
+        const updRes = await fetch("/api/facility/update-mfl", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ newMfl: finalMfl, openmrsDbNameOverride: dbName })
+        });
+        const updData = await updRes.json();
+        appendTerminal("Auto MFL update", (updData?.log ?? []) as string[]);
+
+        setFacilityCode(finalMfl);
+        setDetectedMflCode(finalMfl);
+        setMflNeedsInput(false);
+        setMflSource("manual_prompt");
+        return finalMfl;
+      };
+
       appendTerminal("Auto run", ["Generating visualization preview..."]);
-      const previewOk = await callPreview();
+      const finalMfl = await ensureValidFacilityMfl();
+      const previewOk = await callPreview(finalMfl);
       if (!previewOk) throw new Error("Preview generation failed; auto run aborted.");
 
       appendTerminal("Auto run", ["Pushing Visualization payload..."]);
-      await callPush();
+      await callPush(finalMfl);
 
       appendTerminal("Auto run", ["Pushing Program Monitoring batch (Case Surveillance)..."]);
-      await callCaseSurveillancePush();
+      await callCaseSurveillancePush(finalMfl);
 
       appendTerminalLine("Auto run complete.");
       setStep(3);
@@ -1398,6 +1547,72 @@ export default function HomePage() {
               </button>
             </div>
           )}
+
+          <div style={{ marginTop: "0.9rem", paddingTop: "0.9rem", borderTop: "1px solid rgba(0,0,0,0.1)" }}>
+            <h3 className="card-title" style={{ marginTop: 0 }}>
+              Dump Storage (cleanup)
+            </h3>
+            <p className="card-text" style={{ marginTop: "0.25rem" }}>
+              Tracks files in <code>uploaded_dbs/</code> and lets you delete orphan dumps (safe) to free disk space.
+            </p>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.4rem" }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={loadingDumpStorage || cleanupOrphanDumpsLoading}
+                onClick={() => refreshDumpStorage()}
+              >
+                {loadingDumpStorage ? "Refreshing..." : "Refresh dump list"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={cleanupOrphanDumpsLoading || !dumpStorage?.orphanCount}
+                onClick={() => cleanupOrphanDumps()}
+              >
+                {cleanupOrphanDumpsLoading
+                  ? "Deleting orphan dumps..."
+                  : `Delete orphan dumps (${dumpStorage?.orphanCount ?? 0})`}
+              </button>
+            </div>
+
+            <pre className="card-output" style={{ marginTop: "0.6rem" }}>
+              {dumpStorage
+                ? [
+                    `uploadsDir: ${dumpStorage?.uploadsDir ?? "n/a"}`,
+                    `root free: ${formatBytes(dumpStorage?.rootAvailBytes)}`,
+                    `uploaded_dbs size: ${formatBytes(dumpStorage?.uploadedDbsBytes)}`,
+                    `orphan dumps: ${dumpStorage?.orphanCount ?? "n/a"}`
+                  ].join("\n")
+                : loadingDumpStorage
+                ? "Loading dump storage info..."
+                : "Dump storage info not loaded yet."}
+            </pre>
+
+            {dumpStorage?.dumps?.length ? (
+              <details style={{ marginTop: "0.5rem" }}>
+                <summary>Show dump files</summary>
+                <pre className="card-output" style={{ marginTop: "0.5rem" }}>
+                  {dumpStorage.dumps
+                    .slice(0, 50)
+                    .map((d: any) => {
+                      const tag = d.isOrphan ? "ORPHAN" : d.isCurrent ? "CURRENT" : "OK";
+                      return `${tag.padEnd(7, " ")} ${d.timestamp}  ${d.fileName}  (${formatBytes(d.sizeBytes)})`;
+                    })
+                    .join("\n")}
+                  {dumpStorage.dumps.length > 50 ? `\n... (${dumpStorage.dumps.length - 50} more)` : ""}
+                </pre>
+              </details>
+            ) : null}
+
+            {orphanCleanupResult ? (
+              <div style={{ marginTop: "0.6rem" }}>
+                <pre className="card-output">
+                  <strong>Orphan dump cleanup:</strong> {orphanCleanupResult.message}
+                </pre>
+              </div>
+            ) : null}
+          </div>
 
           <div style={{ marginTop: "0.9rem" }}>
             <h3 className="card-title" style={{ marginTop: 0 }}>
