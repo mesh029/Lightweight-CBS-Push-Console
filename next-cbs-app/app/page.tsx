@@ -1904,13 +1904,38 @@ export default function HomePage() {
                       ...((effectiveVizRecordsResolved ?? {}) as any),
                       totalRecordsToPush: effectiveVizTotalRecordsResolved
                     };
-                  if (payloadStatsView === "caseSummary") return effectiveCaseSummaryResolved ?? "n/a";
+                  // If case stats aren't available yet (or case push failed / not run), fall back to viz stats
+                  // instead of showing confusing "n/a".
+                  if (payloadStatsView === "caseSummary") {
+                    if (!effectiveCaseSummaryResolved) {
+                      return {
+                        note: "Case surveillance pushSummary not available (likely case push not run yet or failed). Showing visualization stats instead.",
+                        visualization: vizSummary ?? null,
+                        visualization_records: effectiveVizRecordsResolved ?? null,
+                        visualization_totalRecordsToPush: effectiveVizTotalRecordsResolved ?? null
+                      };
+                    }
+                    return effectiveCaseSummaryResolved;
+                  }
                   if (payloadStatsView === "caseEventTypes")
                     return {
                       eventTypeCounts: effectiveCaseSummaryResolved?.eventTypeCounts ?? {},
-                      createdAtRange: effectiveCaseSummaryResolved?.createdAtRange ?? null
+                      createdAtRange: effectiveCaseSummaryResolved?.createdAtRange ?? null,
+                      ...(effectiveCaseSummaryResolved
+                        ? {}
+                        : {
+                            note: "Case surveillance pushSummary not available (likely case push not run yet or failed). Showing empty case fingerprints."
+                          })
                     };
-                  if (payloadStatsView === "caseFingerprintJson") return effectiveCaseSummaryResolved ?? "n/a";
+                  if (payloadStatsView === "caseFingerprintJson")
+                    return (
+                      effectiveCaseSummaryResolved ?? {
+                        note: "Case surveillance pushSummary not available (likely case push not run yet or failed). Showing visualization stats instead.",
+                        visualization: vizSummary ?? null,
+                        visualization_records: effectiveVizRecordsResolved ?? null,
+                        visualization_totalRecordsToPush: effectiveVizTotalRecordsResolved ?? null
+                      }
+                    );
 
                   // both
                   return {
