@@ -1597,7 +1597,7 @@ export default function HomePage() {
                     .slice(0, 50)
                     .map((d: any) => {
                       const tag = d.isOrphan ? "ORPHAN" : d.isCurrent ? "CURRENT" : "OK";
-                      return `${tag.padEnd(7, " ")} ${d.timestamp}  ${d.fileName}  (${formatBytes(d.sizeBytes)})`;
+                      return `${tag.padEnd(7, " ")} ${d.timestamp}  ${d.fileName}  (${formatBytes(d.sizeBytes)})\n    at: ${d.fullPath ?? "n/a"}`;
                     })
                     .join("\n")}
                   {dumpStorage.dumps.length > 50 ? `\n... (${dumpStorage.dumps.length - 50} more)` : ""}
@@ -1625,9 +1625,12 @@ export default function HomePage() {
                           }}
                         >
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: "0.9rem", color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {tag.padEnd(7, " ")} {d.timestamp} {d.fileName} ({formatBytes(d.sizeBytes)})
-                            </div>
+                                    <div style={{ fontSize: "0.9rem", color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {tag.padEnd(7, " ")} {d.timestamp} {d.fileName} ({formatBytes(d.sizeBytes)})
+                                    </div>
+                                    <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {d.fullPath ?? "n/a"}
+                                    </div>
                           </div>
                           <div style={{ flexShrink: 0 }}>
                             <button

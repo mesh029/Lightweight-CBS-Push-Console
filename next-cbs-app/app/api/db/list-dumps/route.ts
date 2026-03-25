@@ -112,6 +112,7 @@ export async function GET() {
 
       dumps.push({
         fileName,
+        fullPath,
         timestamp: ts,
         sizeBytes,
         openmrsDbExists,
