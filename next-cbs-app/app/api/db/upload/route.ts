@@ -91,6 +91,18 @@ export async function POST(req: Request) {
     // At this point, the OpenMRS DB is created and loaded. ETL refresh will be run
     // by the separate /api/db/run-etl + health pipeline.
 
+    // Record where the "current loaded" dump/db live so later operations (like delete)
+    // do not depend on browser localStorage.
+    const statePath = path.join(uploadsDir, ".lcp_current_openmrs.json");
+    const state = {
+      dbName,
+      uploadedDumpFileName: fileName,
+      uploadedDumpFullPath: fullPath,
+      uploadsDir,
+      createdAt: new Date().toISOString()
+    };
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+
     return NextResponse.json(
       {
         ok: true,

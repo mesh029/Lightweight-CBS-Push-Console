@@ -567,9 +567,10 @@ export default function HomePage() {
 
   const deleteCurrentLoadedDb = async () => {
     const dbName = openmrsDbName.trim() || cachedOpenmrsDbName.trim();
-    if (!dbName) return;
     const ok = window.confirm(
-      `Delete currently loaded DB?\n\nThis will DROP database '${dbName}' and remove the uploaded .sql file if found.`
+      dbName
+        ? `Delete currently loaded DB?\n\nThis will DROP database '${dbName}' and remove the uploaded .sql file if found.`
+        : `Delete currently loaded DB?\n\nThis will DROP the server-side "current loaded" database (based on the latest upload marker) and remove its dump file if found.`
     );
     if (!ok) return;
 
@@ -578,10 +579,7 @@ export default function HomePage() {
       const res = await fetch("/api/db/delete-loaded", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          openmrsDbNameOverride: dbName,
-          deleteDumpFile: true
-        })
+        body: JSON.stringify({ deleteDumpFile: true })
       });
       const data = await res.json();
       appendTerminal("DB cleanup", (data?.log ?? []) as string[]);

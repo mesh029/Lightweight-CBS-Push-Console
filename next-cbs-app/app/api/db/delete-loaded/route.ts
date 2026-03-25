@@ -15,11 +15,28 @@ export async function POST(req: Request) {
   const log: string[] = [];
   try {
     const body = (await req.json().catch(() => ({}))) as DeleteLoadedRequest;
-    const dbName = (body.openmrsDbNameOverride || "").trim();
+    const uploadsDir = path.join(process.cwd(), "uploaded_dbs");
+    const statePath = path.join(uploadsDir, ".lcp_current_openmrs.json");
+
+    // Prefer the server-side "current loaded" marker so we don't depend on browser cache.
+    let marker: any = null;
+    try {
+      const raw = await fs.readFile(statePath, "utf8");
+      marker = JSON.parse(raw);
+    } catch {
+      marker = null;
+    }
+
+    const dbNameFromOverride = (body.openmrsDbNameOverride || "").trim();
+    const dbName = (marker?.dbName || dbNameFromOverride || "").trim();
 
     if (!dbName) {
       return NextResponse.json(
-        { ok: false, message: "openmrsDbNameOverride is required", log },
+        {
+          ok: false,
+          message: `Cannot determine which DB to delete. ${marker?.dbName ? `Marker present but invalid dbName: ${String(marker.dbName)}` : "No server marker found. Upload/import must have run at least once, or provide openmrsDbNameOverride."}`,
+          log
+        },
         { status: 400 }
       );
     }
@@ -57,9 +74,9 @@ export async function POST(req: Request) {
       // Imported DB names are openmrs_<YYYYMMDDHHMMSS>, while uploaded file names are
       // <YYYYMMDDHHMMSS>-<original>.sql. Use that shared timestamp for cleanup.
       const ts = dbName.startsWith("openmrs_") ? dbName.slice("openmrs_".length) : "";
-      const uploadsDir = path.join(process.cwd(), "uploaded_dbs");
 
       try {
+        log.push(`Dump directory: ${uploadsDir}`);
         const names = await fs.readdir(uploadsDir);
         const matches = names.filter((n) => (ts ? n.startsWith(`${ts}-`) : false));
         for (const fileName of matches) {
@@ -77,12 +94,23 @@ export async function POST(req: Request) {
       }
     }
 
+    // Clear marker so future "delete current loaded" calls don't re-delete the same DB.
+    try {
+      await fs.unlink(statePath);
+      log.push("Cleared server-side current-loaded marker.");
+    } catch {
+      // ignore
+    }
+
     return NextResponse.json(
       {
         ok: true,
         message: `Deleted loaded DB '${dbName}'`,
         dbName,
         deletedDumpFiles,
+        uploadsDir,
+        statePath,
+        markerUsed: marker?.dbName ? { dbName: marker.dbName, uploadedDumpFileName: marker.uploadedDumpFileName } : null,
         log
       },
       { status: 200 }
