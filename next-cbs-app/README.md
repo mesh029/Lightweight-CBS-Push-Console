@@ -125,11 +125,14 @@ If build fails, fix the reported error first before pushing/deploying.
 
 ## 7) Storage and cleanup
 
-- Uploaded dumps are stored under `next-cbs-app/uploaded_dbs/`
+- Uploaded dumps are written to `${process.cwd()}/uploaded_dbs/` (when you run the app from `next-cbs-app`, this is `next-cbs-app/uploaded_dbs/`)
 - Imported DB names are created as `openmrs_<timestamp>`
+- After a successful upload/import, the server also writes a marker file:
+  - `${process.cwd()}/uploaded_dbs/.lcp_current_openmrs.json`
 - The UI button **Delete Current Loaded DB** will:
   - drop that imported DB
-  - remove matching uploaded dump file (same timestamp) when found
+  - remove matching uploaded dump file(s) (same timestamp) when found
+  - use the server marker file to identify what “current loaded” means (so it does not depend on browser `localStorage`)
 
 ## 8) Production notes
 
