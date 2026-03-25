@@ -47,6 +47,11 @@ export default function HomePage() {
   const [payloadStatsView, setPayloadStatsView] = useState<
     "both" | "vizSummary" | "vizRecords" | "caseSummary" | "caseEventTypes" | "caseFingerprintJson"
   >("both");
+  const [prePutVizRecords, setPrePutVizRecords] = useState<{
+    recordsToPush: any;
+    totalRecordsToPush: number | null;
+  } | null>(null);
+  const [prePutCaseSummary, setPrePutCaseSummary] = useState<any | null>(null);
   const [loadingHealth, setLoadingHealth] = useState(false);
   const [loadingPush, setLoadingPush] = useState(false);
   const [loadingCasePush, setLoadingCasePush] = useState(false);
@@ -462,6 +467,8 @@ export default function HomePage() {
     }
     setLoadingPush(true);
     setPushResult(null);
+    setPrePutVizRecords(null);
+    // keep any existing case pre-put stats; the case push is handled separately
     try {
       appendTerminal("Visualization push", ["Starting visualization push..."]);
       const dbName = openmrsDbName.trim();
@@ -504,7 +511,26 @@ export default function HomePage() {
             continue;
           }
           if (parsed?.type === "log") {
-            appendTerminalLine(String(parsed.line ?? ""));
+            const line = String(parsed.line ?? "");
+            appendTerminalLine(line);
+
+            // Parse recordsToPush summary so stats are visible before the POST completes.
+            const marker = "recordsToPush summary=";
+            const idx = line.indexOf(marker);
+            if (idx >= 0) {
+              const jsonPart = line.slice(idx + marker.length);
+              try {
+                const obj = JSON.parse(jsonPart);
+                const totalRecordsToPush = obj?.totalRecordsToPush ?? null;
+                const { totalRecordsToPush: _t, ...recordsToPush } = obj ?? {};
+                setPrePutVizRecords({
+                  recordsToPush,
+                  totalRecordsToPush: typeof totalRecordsToPush === "number" ? totalRecordsToPush : null
+                });
+              } catch {
+                // ignore JSON parse errors; logging will still show the line
+              }
+            }
           }
           if (parsed?.type === "done") {
             finalResult = parsed.result;
@@ -620,6 +646,7 @@ export default function HomePage() {
     }
     setLoadingCasePush(true);
     setCasePushResult(null);
+    setPrePutCaseSummary(null);
     try {
       appendTerminal("Case surveillance push", ["Starting case surveillance push..."]);
       const dbName = openmrsDbName.trim();
@@ -664,7 +691,20 @@ export default function HomePage() {
           }
 
           if (parsed?.type === "log") {
-            appendTerminalLine(String(parsed.line ?? ""));
+            const line = String(parsed.line ?? "");
+            appendTerminalLine(line);
+
+            // Parse pushSummary emitted BEFORE PUT, so stats appear before send completes.
+            const marker = "pushSummary BEFORE PUT:";
+            const idx = line.indexOf(marker);
+            if (idx >= 0) {
+              const jsonPart = line.slice(idx + marker.length).trim();
+              try {
+                setPrePutCaseSummary(JSON.parse(jsonPart));
+              } catch {
+                // ignore
+              }
+            }
           }
           if (parsed?.type === "done") {
             finalResult = parsed.result;
@@ -1784,25 +1824,34 @@ export default function HomePage() {
                 const vizSummary = vizDetails?.pushSummary ?? null;
                 const caseDetails = (casePushResult?.details ?? {}) as any;
                 const caseSummary = caseDetails?.pushSummary ?? null;
+                const effectiveCaseSummary = caseSummary ?? prePutCaseSummary ?? null;
+                const effectiveVizRecords = prePutVizRecords?.recordsToPush ?? vizSummary?.recordsToPush ?? null;
+                const effectiveVizTotalRecords =
+                  prePutVizRecords?.totalRecordsToPush ?? vizSummary?.totalRecordsToPush ?? null;
 
                 const renderSelection = () => {
-                  if (!vizSummary && !caseSummary) return "n/a";
+                  if (!vizSummary && !effectiveVizRecords && !effectiveCaseSummary) return "n/a";
 
                   if (payloadStatsView === "vizSummary") return vizSummary ?? "n/a";
                   if (payloadStatsView === "vizRecords")
-                    return vizSummary?.recordsToPush ?? "n/a";
-                  if (payloadStatsView === "caseSummary") return caseSummary ?? "n/a";
+                    return {
+                      ...((effectiveVizRecords ?? {}) as any),
+                      totalRecordsToPush: effectiveVizTotalRecords
+                    };
+                  if (payloadStatsView === "caseSummary") return effectiveCaseSummary ?? "n/a";
                   if (payloadStatsView === "caseEventTypes")
                     return {
-                      eventTypeCounts: caseSummary?.eventTypeCounts ?? {},
-                      createdAtRange: caseSummary?.createdAtRange ?? null
+                      eventTypeCounts: effectiveCaseSummary?.eventTypeCounts ?? {},
+                      createdAtRange: effectiveCaseSummary?.createdAtRange ?? null
                     };
-                  if (payloadStatsView === "caseFingerprintJson") return caseSummary ?? "n/a";
+                  if (payloadStatsView === "caseFingerprintJson") return effectiveCaseSummary ?? "n/a";
 
                   // both
                   return {
                     visualization: vizSummary ?? null,
-                    case_surveillance: caseSummary ?? null
+                    case_surveillance: effectiveCaseSummary ?? null,
+                    visualization_records: effectiveVizRecords ?? null,
+                    visualization_totalRecordsToPush: effectiveVizTotalRecords
                   };
                 };
 
