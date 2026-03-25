@@ -1724,6 +1724,73 @@ export default function HomePage() {
             </div>
           )}
 
+          {step === 3 && (pushResult || casePushResult) && (
+            <div style={{ marginTop: "0.85rem" }}>
+              <h3 className="card-title" style={{ marginTop: 0 }}>
+                Push Audit (records & fingerprints)
+              </h3>
+
+              {(() => {
+                const vizDetails = (pushResult?.details ?? {}) as any;
+                const vizSummary = vizDetails?.pushSummary ?? null;
+                const caseDetails = (casePushResult?.details ?? {}) as any;
+                const caseSummary = caseDetails?.pushSummary ?? null;
+
+                return (
+                  <div style={{ display: "flex", gap: "0.9rem", flexWrap: "wrap" }}>
+                    {vizSummary && (
+                      <div style={{ minWidth: 320, flex: "1 1 320px" }}>
+                        <pre className="card-output">
+                          <strong>Visualization</strong>
+                          {"\n"}
+                          Facility: {String(vizSummary.mfl_code ?? "n/a")}
+                          {"\n"}Version: {String(vizSummary.version ?? "n/a")}
+                          {"\n"}ETL forced: {String(Boolean(vizSummary.etlRefreshForced))}
+                          {"\n"}Total records to push:{" "}
+                          {String(vizSummary.totalRecordsToPush ?? "n/a")}
+                        </pre>
+                        <details style={{ marginTop: "0.4rem" }}>
+                          <summary>recordsToPush breakdown</summary>
+                          <pre className="card-output" style={{ marginTop: "0.5rem" }}>
+                            {JSON.stringify(vizSummary.recordsToPush ?? {}, null, 2)}
+                          </pre>
+                        </details>
+                      </div>
+                    )}
+
+                    {caseSummary && (
+                      <div style={{ minWidth: 320, flex: "1 1 320px" }}>
+                        <pre className="card-output">
+                          <strong>Case surveillance</strong>
+                          {"\n"}Facility: {String(caseSummary.facilityCodeFinal ?? "n/a")}
+                          {"\n"}Version: {String(caseSummary.versionFinal ?? "n/a")}
+                          {"\n"}ETL forced: {String(Boolean(caseSummary.etlRefreshForced))}
+                          {"\n"}Event types included:{" "}
+                          {Array.isArray(caseSummary.includeEventTypes)
+                            ? caseSummary.includeEventTypes.join(", ")
+                            : "n/a"}
+                        </pre>
+
+                        <pre className="card-output" style={{ marginTop: "0.5rem" }}>
+                          <strong>eventTypeCounts</strong>
+                          {"\n"}
+                          {JSON.stringify(caseSummary.eventTypeCounts ?? {}, null, 2)}
+                        </pre>
+
+                        <pre className="card-output" style={{ marginTop: "0.5rem" }}>
+                          <strong>createdAtRange</strong>
+                          {"\n"}
+                          {String(caseSummary.createdAtRange?.min ?? "n/a")}..{" "}
+                          {String(caseSummary.createdAtRange?.max ?? "n/a")}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
           {step === 3 && (
             <div style={{ marginTop: "1rem", paddingTop: "0.9rem", borderTop: "1px solid rgba(0,0,0,0.1)" }}>
               <h3 className="card-title" style={{ marginTop: 0 }}>
