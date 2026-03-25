@@ -1602,6 +1602,71 @@ export default function HomePage() {
                     .join("\n")}
                   {dumpStorage.dumps.length > 50 ? `\n... (${dumpStorage.dumps.length - 50} more)` : ""}
                 </pre>
+
+                <div style={{ marginTop: "0.6rem" }}>
+                  <p className="field-help" style={{ margin: 0 }}>
+                    Manual deletes: delete individual dump files from <code>uploaded_dbs/</code>.
+                    (Current-loaded dump is blocked unless you delete it via DB delete first.)
+                  </p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem", marginTop: "0.45rem" }}>
+                    {dumpStorage.dumps.slice(0, 20).map((d: any) => {
+                      const tag = d.isOrphan ? "ORPHAN" : d.isCurrent ? "CURRENT" : "OK";
+                      return (
+                        <div
+                          key={d.fileName}
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "0.6rem",
+                            padding: "0.4rem 0.55rem",
+                            border: "1px solid rgba(0,0,0,0.08)",
+                            borderRadius: "10px"
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: "0.9rem", color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {tag.padEnd(7, " ")} {d.timestamp} {d.fileName} ({formatBytes(d.sizeBytes)})
+                            </div>
+                          </div>
+                          <div style={{ flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              disabled={cleanupOrphanDumpsLoading || d.isCurrent}
+                              onClick={async () => {
+                                const ok = window.confirm(
+                                  `Delete dump file?\n\n${d.fileName}\n\nThis deletes only the .sql/.sql.gz dump file from disk.`
+                                );
+                                if (!ok) return;
+                                setCleanupOrphanDumpsLoading(true);
+                                try {
+                                  const res = await fetch("/api/db/delete-dump", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ fileName: d.fileName })
+                                  });
+                                  const data = await res.json();
+                                  appendTerminal("Dump delete", [
+                                    res.ok && data?.ok ? `Deleted: ${d.fileName}` : `Delete failed: ${data?.message ?? String(data)}`
+                                  ]);
+                                  await refreshDumpStorage();
+                                } catch (e) {
+                                  appendTerminal("Dump delete failed", [String(e)]);
+                                } finally {
+                                  setCleanupOrphanDumpsLoading(false);
+                                }
+                              }}
+                              style={{ padding: "0.35rem 0.55rem" }}
+                            >
+                              {d.isCurrent ? "Current" : "Delete"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </details>
             ) : null}
 
