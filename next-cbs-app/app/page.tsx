@@ -1773,7 +1773,7 @@ export default function HomePage() {
             </div>
           )}
 
-          {step === 3 && (pushResult || casePushResult) && (
+          {step === 3 && (
             <div style={{ marginTop: "0.85rem" }}>
               <h3 className="card-title" style={{ marginTop: 0 }}>
                 Push Audit (records & fingerprints)
