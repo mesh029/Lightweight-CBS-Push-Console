@@ -187,6 +187,7 @@ async function getCaseSurveillanceGlobals(openmrsDbName: string) {
         "'case.surveillance.token.url'," +
         "'case.surveillance.client.id'," +
         "'case.surveillance.client.secret'," +
+        "'caseSurveillance.lastFetchDateAndTime'," +
         "'kenyaemr.version'," +
         "'facility.mflcode'" +
         ");"
@@ -332,6 +333,7 @@ export async function POST(req: Request) {
         let tokenUrl = globals["case.surveillance.token.url"];
         let clientId = globals["case.surveillance.client.id"];
         let clientSecret = globals["case.surveillance.client.secret"];
+        let csFetchDate = globals["caseSurveillance.lastFetchDateAndTime"];
         let emrVersion = globals["kenyaemr.version"];
         let facilityMflFromDb = globals["facility.mflcode"];
 
@@ -356,6 +358,7 @@ export async function POST(req: Request) {
             tokenUrl = globals["case.surveillance.token.url"];
             clientId = globals["case.surveillance.client.id"];
             clientSecret = globals["case.surveillance.client.secret"];
+            csFetchDate = globals["caseSurveillance.lastFetchDateAndTime"];
             emrVersion = globals["kenyaemr.version"];
             facilityMflFromDb = globals["facility.mflcode"];
           }
@@ -388,11 +391,13 @@ export async function POST(req: Request) {
           port: dbCfg.port,
           user: dbCfg.user,
           password: dbCfg.password,
-          database: "kenyaemr_etl"
+          // Build case events from the selected uploaded DB's ETL outputs, not global kenyaemr_etl.
+          database: openmrsDbName
         });
 
         const eventList: any[] = [];
         let builtEventTypeCounts: Record<string, number> = {};
+        let builtDistinctPatientCounts: Record<string, number> = {};
         let builtMinCreatedAt: string | null = null;
         let builtMaxCreatedAt: string | null = null;
 
@@ -540,8 +545,17 @@ export async function POST(req: Request) {
 
           // eligible_for_vl
           if (includeEventTypes.has("eligible_for_vl")) {
-            const [eligibleVlRows] = await etlConn.query(
-              `
+            const [hasVlValidityTracker] = await etlConn.query(
+              "SHOW TABLES LIKE 'etl_viral_load_validity_tracker';"
+            );
+            const [hasVlTracker] = await etlConn.query(
+              "SHOW TABLES LIKE 'etl_viral_load_tracker';"
+            );
+
+            let eligibleVlRows: any[] = [];
+            if (Array.isArray(hasVlValidityTracker) && hasVlValidityTracker.length > 0) {
+              const [rows] = await etlConn.query(
+                `
       SELECT
         v.patient_id AS patientPk,
         addr.county AS county,
@@ -584,15 +598,6 @@ export async function POST(req: Request) {
         ON addr.patient_id = v.patient_id
       WHERE v.date_started_art IS NOT NULL
         AND (
-          (TIMESTAMPDIFF(MONTH, v.date_started_art, CURRENT_DATE()) >= 3
-            AND v.base_viral_load_test_result IS NULL)
-          OR
-          ((v.pregnancy_status = '1065' OR v.breastfeeding_status = '1065')
-            AND TIMESTAMPDIFF(MONTH, v.date_started_art, CURRENT_DATE()) >= 3
-            AND v.vl_result IS NOT NULL
-            AND v.date_test_requested < CURRENT_DATE()
-            AND v.order_reason NOT IN ('159882','1434','2001237','163718'))
-          OR
           (v.lab_test = 856
             AND CAST(v.vl_result AS UNSIGNED) >= 200
             AND TIMESTAMPDIFF(MONTH, v.date_test_requested, CURRENT_DATE()) >= 3)
@@ -600,21 +605,64 @@ export async function POST(req: Request) {
           (((v.lab_test = 1305 AND CAST(v.vl_result AS UNSIGNED) = 1302) OR CAST(v.vl_result AS UNSIGNED) < 200)
             AND TIMESTAMPDIFF(MONTH, v.date_test_requested, CURRENT_DATE()) >= 6
             AND TIMESTAMPDIFF(YEAR, demo.DOB, v.date_test_requested) BETWEEN 0 AND 24)
-          OR
-          (((v.lab_test = 1305 AND CAST(v.vl_result AS UNSIGNED) = 1302) OR CAST(v.vl_result AS UNSIGNED) < 200)
-            AND TIMESTAMPDIFF(MONTH, v.date_test_requested, CURRENT_DATE()) >= 12
-            AND TIMESTAMPDIFF(YEAR, demo.DOB, v.date_test_requested) > 24)
-          OR
-          ((v.pregnancy_status = '1065' OR v.breastfeeding_status = '1065')
-            AND TIMESTAMPDIFF(MONTH, v.date_started_art, CURRENT_DATE()) >= 3
-            AND v.order_reason IN ('159882','1434','2001237','163718')
-            AND TIMESTAMPDIFF(MONTH, v.date_test_requested, CURRENT_DATE()) >= 6
-            AND ((v.lab_test = 1305 AND CAST(v.vl_result AS UNSIGNED) = 1302) OR CAST(v.vl_result AS UNSIGNED) < 200))
         );
       `
-            );
+              );
+              eligibleVlRows = (Array.isArray(rows) ? rows : []) as any[];
+            } else if (Array.isArray(hasVlTracker) && hasVlTracker.length > 0) {
+              safePushLog(
+                "Case event building: using fallback eligible_for_vl logic from etl_viral_load_tracker (validity tracker missing)."
+              );
+              const [rows] = await etlConn.query(
+                `
+      SELECT
+        v.patient_id AS patientPk,
+        addr.county AS county,
+        addr.sub_county AS subCounty,
+        addr.ward AS ward,
+        demo.Gender AS sex,
+        DATE_FORMAT(demo.DOB, '%Y-%m-%d') AS dob,
+        DATE_FORMAT(v.vl_date, '%Y-%m-%d %H:%i:%s') AS createdAt,
+        DATE_FORMAT(v.vl_date, '%Y-%m-%d %H:%i:%s') AS updatedAt,
+        null AS positiveHivTestDate,
+        null AS visitDate,
+        null AS artStartDate,
+        DATE_FORMAT(v.vl_date, '%Y-%m-%d %H:%i:%s') AS lastVlOrderDate,
+        v.vl_result AS lastVlResults,
+        DATE_FORMAT(v.vl_date, '%Y-%m-%d %H:%i:%s') AS lastVlResultsDate,
+        null AS vlOrderReason,
+        null AS pregnancyStatus,
+        null AS breastFeedingStatus
+      FROM etl_viral_load_tracker v
+      INNER JOIN etl_patient_demographics demo
+        ON demo.patient_id = v.patient_id
+      LEFT JOIN (
+        SELECT
+          patient_id,
+          MAX(county) AS county,
+          MAX(sub_county) AS sub_county,
+          MAX(ward) AS ward
+        FROM etl_person_address
+        WHERE (voided = 0 OR voided IS NULL)
+        GROUP BY patient_id
+      ) addr
+        ON addr.patient_id = v.patient_id
+      WHERE v.vl_date IS NOT NULL
+        AND (
+          v.vl_result IS NULL
+          OR v.vl_result = ''
+          OR TIMESTAMPDIFF(MONTH, v.vl_date, CURRENT_DATE()) >= 6
+        );
+      `
+              );
+              eligibleVlRows = (Array.isArray(rows) ? rows : []) as any[];
+            } else {
+              safePushLog(
+                "Case event building: eligible_for_vl source tables not found (etl_viral_load_validity_tracker / etl_viral_load_tracker)."
+              );
+            }
 
-            const eligibleVlArr = (Array.isArray(eligibleVlRows) ? eligibleVlRows : []) as any[];
+            const eligibleVlArr = eligibleVlRows as any[];
             const eligibleVlArrLimited =
               maxEligibleForVl > 0 ? eligibleVlArr.slice(0, maxEligibleForVl) : eligibleVlArr;
 
@@ -681,7 +729,11 @@ export async function POST(req: Request) {
         GROUP BY patient_id
       ) addr
         ON addr.patient_id = h.patient_id
-      WHERE h.followup_type = 5622;
+      -- EMR dashboard "HEI at 6-8 weeks" is based on age at visit:
+      -- 6-8 weeks = 42-56 days using child's DOB from etl_patient_demographics.
+      WHERE h.visit_date IS NOT NULL
+        AND demo.DOB IS NOT NULL
+        AND DATEDIFF(h.visit_date, demo.DOB) BETWEEN 42 AND 56;
       `
             );
 
@@ -719,14 +771,22 @@ export async function POST(req: Request) {
           safePushLog(`Built case-surveillance eventList size=${eventList.length}.`);
 
           builtEventTypeCounts = {};
+          builtDistinctPatientCounts = {};
           builtMinCreatedAt = null;
           builtMaxCreatedAt = null;
+          const distinctPatientSets: Record<string, Set<string>> = {};
 
           for (const ev of eventList) {
             const t = String(ev?.eventType ?? "");
             if (!t) continue;
 
             builtEventTypeCounts[t] = (builtEventTypeCounts[t] ?? 0) + 1;
+
+            const patientPk = String(ev?.client?.patientPk ?? "").trim();
+            if (patientPk) {
+              if (!distinctPatientSets[t]) distinctPatientSets[t] = new Set<string>();
+              distinctPatientSets[t].add(patientPk);
+            }
 
             const createdAt = String(ev?.event?.createdAt ?? "");
             if (createdAt) {
@@ -743,6 +803,10 @@ export async function POST(req: Request) {
             }
           }
 
+          for (const [t, s] of Object.entries(distinctPatientSets)) {
+            builtDistinctPatientCounts[t] = s.size;
+          }
+
           safePushLog(
             `Event fingerprint BEFORE PUT: facilityCodeFinal=${facilityCodeFinal} eventTypeCounts=${JSON.stringify(
               builtEventTypeCounts
@@ -751,10 +815,19 @@ export async function POST(req: Request) {
           safePushLog(
             `pushSummary BEFORE PUT: ${JSON.stringify({
               etlRefreshForced: true,
+              csFetchDateUsed: csFetchDate ?? null,
+              indicatorSemantics: {
+                roll_call: "snapshot_per_run",
+                new_case: "incremental_from_csFetchDate",
+                linked_case: "incremental_from_csFetchDate",
+                eligible_for_vl: "etl_cohort_snapshot",
+                hei_at_6_to_8_weeks: "age_window_snapshot"
+              },
               facilityCodeFinal,
               versionFinal,
               includeEventTypes: Array.from(includeEventTypes),
               eventTypeCounts: builtEventTypeCounts,
+              distinctPatientCounts: builtDistinctPatientCounts,
               createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
             })}`
           );
@@ -768,12 +841,23 @@ export async function POST(req: Request) {
             log,
             payload,
             eventList,
+            openmrsDbNameUsed: openmrsDbName,
             pushSummary: {
+              openmrsDbNameUsed: openmrsDbName,
               etlRefreshForced: true,
+              csFetchDateUsed: csFetchDate ?? null,
+              indicatorSemantics: {
+                roll_call: "snapshot_per_run",
+                new_case: "incremental_from_csFetchDate",
+                linked_case: "incremental_from_csFetchDate",
+                eligible_for_vl: "etl_cohort_snapshot",
+                hei_at_6_to_8_weeks: "age_window_snapshot"
+              },
               facilityCodeFinal,
               versionFinal,
               includeEventTypes: Array.from(includeEventTypes),
               eventTypeCounts: builtEventTypeCounts,
+              distinctPatientCounts: builtDistinctPatientCounts,
               createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
             },
             cbsStatus: null,
@@ -874,12 +958,23 @@ export async function POST(req: Request) {
           log,
           payload,
           eventList,
+          openmrsDbNameUsed: openmrsDbName,
           pushSummary: {
+            openmrsDbNameUsed: openmrsDbName,
             etlRefreshForced: true,
+            csFetchDateUsed: csFetchDate ?? null,
+            indicatorSemantics: {
+              roll_call: "snapshot_per_run",
+              new_case: "incremental_from_csFetchDate",
+              linked_case: "incremental_from_csFetchDate",
+              eligible_for_vl: "etl_cohort_snapshot",
+              hei_at_6_to_8_weeks: "age_window_snapshot"
+            },
             facilityCodeFinal,
             versionFinal,
             includeEventTypes: Array.from(includeEventTypes),
             eventTypeCounts: builtEventTypeCounts,
+            distinctPatientCounts: builtDistinctPatientCounts,
             createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
           },
           cbsStatus: lastStatus,

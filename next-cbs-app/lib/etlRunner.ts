@@ -29,6 +29,50 @@ export async function runEtlAndSyncMfl(openmrsDbName: string): Promise<EtlRunRes
 
   let allProcsOk = true;
 
+  // Case-surveillance payloads are built from kenyaemr_etl.* tables.
+  // Some KenyaEMR ETL setups may not fully clear these tables between facilities,
+  // which causes `eventTypeCounts` to repeat across "new" facilities.
+  //
+  // We truncate the case-surveillance input tables first so every ETL refresh starts clean.
+  const etlCaseTablesToTruncate = [
+    "etl_hts_test",
+    "etl_hiv_enrollment",
+    "etl_patient_demographics",
+    "etl_person_address",
+    "etl_viral_load_validity_tracker",
+    "etl_hei_follow_up_visit"
+  ];
+  try {
+    log.push("ETL runner: truncating kenyaemr_etl case-surveillance tables (prevents cross-facility accumulation)...");
+    const etlConn = await mysql.createConnection({
+      host: cfg.host,
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password,
+      database: "kenyaemr_etl"
+    });
+
+    // Avoid FK constraint surprises when truncating/intermediate ETL tables.
+    await etlConn.query("SET FOREIGN_KEY_CHECKS = 0;");
+    for (const t of etlCaseTablesToTruncate) {
+      const [tables] = await etlConn.query(
+        "SHOW TABLES LIKE ?;",
+        [t]
+      );
+      if (Array.isArray(tables) && tables.length > 0) {
+        await etlConn.query(`TRUNCATE TABLE \`${t}\`;`);
+        log.push(`ETL runner: truncated kenyaemr_etl.${t}`);
+      } else {
+        log.push(`ETL runner: table missing; skipping truncation kenyaemr_etl.${t}`);
+      }
+    }
+    await etlConn.query("SET FOREIGN_KEY_CHECKS = 1;");
+    await etlConn.end();
+  } catch (err) {
+    allProcsOk = false;
+    log.push(`ETL runner: failed truncating kenyaemr_etl case-surveillance tables: ${String(err)}`);
+  }
+
   // Procedures live in schema `openmrs`, but reference unqualified tables like `person`,
   // so they will read from the *currently-selected* database (database: openmrsDb).
   const procedures = [

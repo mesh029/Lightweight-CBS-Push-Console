@@ -52,6 +52,7 @@ export default function HomePage() {
     totalRecordsToPush: number | null;
   } | null>(null);
   const [prePutCaseSummary, setPrePutCaseSummary] = useState<any | null>(null);
+  const [casePreAuditKey, setCasePreAuditKey] = useState<string>("");
   const [loadingHealth, setLoadingHealth] = useState(false);
   const [loadingPush, setLoadingPush] = useState(false);
   const [loadingCasePush, setLoadingCasePush] = useState(false);
@@ -748,10 +749,12 @@ export default function HomePage() {
     }
   };
 
-  const callCaseSurveillancePreAudit = async (facilityCodeOverride?: string) => {
+  const callCaseSurveillancePreAudit = async (
+    facilityCodeOverride?: string
+  ): Promise<boolean> => {
     const code = (facilityCodeOverride ?? facilityCode).trim();
-    if (!isFacilityMflValid(code)) return;
-    if (caseEventTypes.length === 0) return;
+    if (!isFacilityMflValid(code)) return false;
+    if (caseEventTypes.length === 0) return false;
 
     setLoadingCasePreAudit(true);
     try {
@@ -818,22 +821,49 @@ export default function HomePage() {
 
       if (finalResult?.pushSummary) {
         setPrePutCaseSummary(finalResult.pushSummary);
+        return true;
       }
     } catch (e) {
       appendTerminal("Case pre-push audit failed", [String(e)]);
+      return false;
     } finally {
       setLoadingCasePreAudit(false);
     }
+
+    return false;
   };
 
   useEffect(() => {
     if (step !== 3) return;
     if (loadingPush || loadingCasePush || loadingCasePreAudit) return;
-    if (prePutCaseSummary) return;
     if (!previewResult?.ok) return;
-    void callCaseSurveillancePreAudit();
+
+    const key = JSON.stringify({
+      facilityCode: facilityCode.trim(),
+      openmrsDbName: openmrsDbName.trim(),
+      versionOverride: versionOverride.trim(),
+      caseEventTypes: [...caseEventTypes].slice().sort()
+    });
+
+    // If we're already showing a computed result for this exact configuration, don't recompute.
+    if (key === casePreAuditKey && prePutCaseSummary) return;
+
+    if (prePutCaseSummary) setPrePutCaseSummary(null);
+
+    void (async () => {
+      const ok = await callCaseSurveillancePreAudit();
+      if (ok) setCasePreAuditKey(key);
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, previewResult?.ok, facilityCode, openmrsDbName, versionOverride, caseEventTypes.join(",")]);
+  }, [
+    step,
+    previewResult?.ok,
+    facilityCode,
+    openmrsDbName,
+    versionOverride,
+    caseEventTypes.join(","),
+    casePreAuditKey
+  ]);
 
   const pushAll = async () => {
     clearTerminal();
@@ -1887,6 +1917,149 @@ export default function HomePage() {
                   <strong>Preview Log:</strong>
                   {(details?.log && Array.isArray(details.log) ? details.log.join("\n") : "n/a")}
                 </pre>
+                {payload && (() => {
+                  const visits = Array.isArray(payload.visits) ? payload.visits : [];
+                  const bedManagement = Array.isArray(payload.bed_management) ? payload.bed_management : [];
+                  const waitTimeArr = Array.isArray(payload.wait_time) ? payload.wait_time : [];
+                  const waiversArr = Array.isArray(payload.waivers) ? payload.waivers : [];
+                  const paymentsArr = Array.isArray(payload.payments) ? payload.payments : [];
+                  const diagnosisArr = Array.isArray(payload.diagnosis) ? payload.diagnosis : [];
+                  const workloadArr = Array.isArray(payload.workload) ? payload.workload : [];
+                  const admissionsArr = Array.isArray(payload.admissions) ? payload.admissions : [];
+                  const inventoryArr = Array.isArray(payload.inventory) ? payload.inventory : [];
+                  const billingArr = Array.isArray(payload.billing) ? payload.billing : [];
+                  const mortalityArr = Array.isArray(payload.mortality) ? payload.mortality : [];
+                  const staffArr = Array.isArray(payload.staff_count) ? payload.staff_count : [];
+                  const immunizationArr = Array.isArray(payload.Immunization) ? payload.Immunization : [];
+
+                  const visitsRecords = (Array.isArray(visits) ? visits : []).reduce(
+                    (sum: number, v: any) => sum + (Array.isArray(v?.details) ? v.details.length : 0),
+                    0
+                  );
+
+                  const bedManagementAgeDetailsRecords = (Array.isArray(bedManagement) ? bedManagement : []).reduce(
+                    (sum: number, bm: any) => sum + (Array.isArray(bm?.age_details) ? bm.age_details.length : 0),
+                    0
+                  );
+
+                  // Match the push-audit "recordsToPush" computation so totals are comparable to what you later push.
+                  const recordsToPushSummary = {
+                    wait_time: waitTimeArr.length,
+                    waivers: waiversArr.length,
+                    payments: paymentsArr.length,
+                    diagnosis: diagnosisArr.length,
+                    workload: workloadArr.length,
+                    admissions: admissionsArr.length,
+                    inventory: inventoryArr.length,
+                    billing: billingArr.length,
+                    visits_categories: visits.length,
+                    visits_records: visitsRecords,
+                    bed_management: bedManagement.length,
+                    bed_management_age_details_records: bedManagementAgeDetailsRecords,
+                    mortality: mortalityArr.length,
+                    staff_count: staffArr.length,
+                    Immunization: immunizationArr.length,
+                    sha_enrollments: 0
+                  };
+
+                  const totalRecordsToPush = Object.values(recordsToPushSummary).reduce(
+                    (sum: number, n: any) => sum + Number(n ?? 0),
+                    0
+                  );
+
+                  const card = (content: any) => (
+                    <div
+                      style={{
+                        border: "1px solid rgba(0,0,0,0.08)",
+                        borderRadius: "10px",
+                        padding: "0.6rem 0.7rem",
+                        minWidth: 210
+                      }}
+                    >
+                      {content}
+                    </div>
+                  );
+
+                  return (
+                    <div style={{ marginTop: "0.6rem", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+                      {card(
+                        <div>
+                          <strong>Expected Visualization Total</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {totalRecordsToPush}
+                            <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>
+                              records (pre-send)
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Facility (preview)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {String(payload?.mfl_code ?? "n/a")}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>EMR Version (preview)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {String(payload?.version ?? "n/a")}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>New Admissions (ETL)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.admissions}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Wait Time queues (count)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.wait_time}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Waivers records (count)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.waivers}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Visits Records (ETL)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.visits_records}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Bed management age-details records</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.bed_management_age_details_records}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Staff roles (distinct users)</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {recordsToPushSummary.staff_count}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {payload && (
                   <pre className="card-output" style={{ marginTop: "0.6rem" }}>
                     <strong>Visualization Payload (to be sent):</strong>
@@ -1994,6 +2167,40 @@ export default function HomePage() {
                 const effectiveCaseSummaryResolved =
                   caseSummary ?? prePutCaseSummary ?? caseComputedSummary ?? null;
 
+                const eventTypeCounts = effectiveCaseSummaryResolved?.eventTypeCounts ?? null;
+                const createdAtRange = effectiveCaseSummaryResolved?.createdAtRange ?? null;
+                const distinctPatientCounts = effectiveCaseSummaryResolved?.distinctPatientCounts ?? {};
+                const csFetchDateUsed = effectiveCaseSummaryResolved?.csFetchDateUsed ?? null;
+                const indicatorSemantics =
+                  effectiveCaseSummaryResolved?.indicatorSemantics ??
+                  ({
+                    roll_call: "snapshot_per_run",
+                    new_case: "incremental_from_csFetchDate",
+                    linked_case: "incremental_from_csFetchDate",
+                    eligible_for_vl: "etl_cohort_snapshot",
+                    hei_at_6_to_8_weeks: "age_window_snapshot"
+                  } as Record<string, string>);
+                const expectedMfl = vizPayload?.mfl_code ?? "n/a";
+                const expectedVersion = vizPayload?.version ?? "n/a";
+                const expectedOpenmrsDbName =
+                  (effectiveCaseSummaryResolved?.openmrsDbNameUsed as string | undefined) ??
+                  openmrsDbName.trim() ??
+                  "n/a";
+
+                const n = (v: any) => (typeof v === "number" ? v : "n/a");
+                const card = (content: any) => (
+                  <div
+                    style={{
+                      border: "1px solid rgba(0,0,0,0.08)",
+                      borderRadius: "10px",
+                      padding: "0.6rem 0.7rem",
+                      minWidth: 190
+                    }}
+                  >
+                    {content}
+                  </div>
+                );
+
                 const renderSelection = () => {
                   if (!vizSummary && !effectiveVizRecordsResolved && !effectiveCaseSummaryResolved) {
                     if (vizComputed) {
@@ -2056,6 +2263,116 @@ export default function HomePage() {
 
                 return (
                   <div style={{ marginTop: "0.2rem" }}>
+                    <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginBottom: "0.6rem" }}>
+                      {card(
+                        <div>
+                          <strong>Expected MFL</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>{String(expectedMfl)}</div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Expected EMR Version</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>{String(expectedVersion)}</div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>OpenMRS DB used</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {String(expectedOpenmrsDbName || "n/a")}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>Visualization totalRecordsToPush</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {effectiveVizTotalRecordsResolved ?? "n/a"}
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>csFetchDate used</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {String(csFetchDateUsed ?? "n/a")}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginBottom: "0.6rem" }}>
+                      {card(
+                        <div>
+                          <strong>roll_call</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {eventTypeCounts ? n(eventTypeCounts.roll_call) : "n/a"} (distinct {n(distinctPatientCounts.roll_call)})
+                            <br />
+                            <span style={{ fontSize: "0.82rem", opacity: 0.8 }}>
+                              mode: {String(indicatorSemantics?.roll_call ?? "n/a")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>new_case</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {eventTypeCounts ? n(eventTypeCounts.new_case) : "n/a"} (distinct {n(distinctPatientCounts.new_case)})
+                            <br />
+                            <span style={{ fontSize: "0.82rem", opacity: 0.8 }}>
+                              mode: {String(indicatorSemantics?.new_case ?? "n/a")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>linked_case</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {eventTypeCounts ? n(eventTypeCounts.linked_case) : "n/a"} (distinct {n(distinctPatientCounts.linked_case)})
+                            <br />
+                            <span style={{ fontSize: "0.82rem", opacity: 0.8 }}>
+                              mode: {String(indicatorSemantics?.linked_case ?? "n/a")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>eligible_for_vl</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {eventTypeCounts ? n(eventTypeCounts.eligible_for_vl) : "n/a"} (distinct {n(distinctPatientCounts.eligible_for_vl)})
+                            <br />
+                            <span style={{ fontSize: "0.82rem", opacity: 0.8 }}>
+                              mode: {String(indicatorSemantics?.eligible_for_vl ?? "n/a")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>hei_at_6_to_8_weeks</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)" }}>
+                            {eventTypeCounts ? n(eventTypeCounts.hei_at_6_to_8_weeks) : "n/a"} (distinct {n(distinctPatientCounts.hei_at_6_to_8_weeks)})
+                            <br />
+                            <span style={{ fontSize: "0.82rem", opacity: 0.8 }}>
+                              mode: {String(indicatorSemantics?.hei_at_6_to_8_weeks ?? "n/a")}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {card(
+                        <div>
+                          <strong>createdAt range</strong>
+                          <div style={{ marginTop: "0.25rem", color: "var(--text-main)", fontSize: "0.9rem" }}>
+                            {createdAtRange?.min ? `${createdAtRange.min}..${createdAtRange.max ?? "n/a"}` : "n/a"}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     <div style={{ display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" }}>
                       <label style={{ fontWeight: 600 }}>Payload stats dropdown</label>
                       <select

@@ -66,10 +66,10 @@ export async function POST(req: Request) {
 
     // Resolve endpoint + auth (endpoint might be stored in global_property)
     const cbsCfg = loadCbsConfig();
-    let endpointUrl = cbsCfg.endpointUrl;
-    if (!endpointUrl) {
-      endpointUrl = await getVisualizationEndpointFromOpenmrs(sourceDbName);
-    }
+    // Prefer the endpoint stored in the uploaded OpenMRS DB's global_property.
+    // The env/default endpoint can be stale and cause HTTP 404 (no update / stale dashboard).
+    let endpointUrl = await getVisualizationEndpointFromOpenmrs(sourceDbName);
+    if (!endpointUrl) endpointUrl = cbsCfg.endpointUrl;
     if (!endpointUrl) throw new Error("visualization.metrics.post.api endpointUrl not configured.");
 
     let emrVersion: string | null = null;
