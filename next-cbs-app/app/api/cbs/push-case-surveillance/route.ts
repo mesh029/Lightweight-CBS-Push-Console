@@ -3,6 +3,12 @@ import mysql from "mysql2/promise";
 import { loadDbConfig } from "@lib/config";
 import { runEtlAndSyncMfl } from "@lib/etlRunner";
 import { randomUUID } from "crypto";
+import {
+  checkLatestFingerprint,
+  findCrossFacilityFingerprintMatch,
+  saveFingerprint
+} from "@lib/pushFingerprintStore";
+import { acquireDbNamedLock } from "@lib/dbLock";
 
 function formatTimestamp(date: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -60,7 +66,25 @@ async function updateOpenmrsFacilityMflAndEtlsiteCode(
   );
   await openmrsConn.end();
 
-  // 2) Update ETL default facility info tables if present
+  // 2) Update ETL default facility info in the selected OpenMRS DB if present
+  const openmrsEtlConn = await mysql.createConnection({
+    host: cfg.host,
+    port: cfg.port,
+    user: cfg.user,
+    password: cfg.password,
+    database: openmrsDbName
+  });
+
+  const [openmrsEtlTables] = await openmrsEtlConn.query("SHOW TABLES LIKE 'etl_default_facility_info';");
+  if (Array.isArray(openmrsEtlTables) && openmrsEtlTables.length > 0) {
+    await openmrsEtlConn.query("UPDATE etl_default_facility_info SET siteCode = ?;", [raw]);
+    log.push(`Facility sync: updated ${openmrsDbName}.etl_default_facility_info.siteCode`);
+  } else {
+    log.push(`Facility sync: etl_default_facility_info not found in ${openmrsDbName} (skipped)`);
+  }
+  await openmrsEtlConn.end();
+
+  // 3) Update legacy shared ETL default facility info tables if present
   const etlConn = await mysql.createConnection({
     host: cfg.host,
     port: cfg.port,
@@ -78,7 +102,7 @@ async function updateOpenmrsFacilityMflAndEtlsiteCode(
   }
   await etlConn.end();
 
-  // 3) Update datatools default facility info if present
+  // 4) Update datatools default facility info if present
   const dtConn = await mysql.createConnection({
     host: cfg.host,
     port: cfg.port,
@@ -100,6 +124,7 @@ async function updateOpenmrsFacilityMflAndEtlsiteCode(
 async function verifyFacilityMflMatchesEtlSiteCode(
   openmrsDbName: string,
   expectedMfl: string,
+  expectedFacilityName: string | null,
   log: string[]
 ) {
   const rawExpected = expectedMfl.trim();
@@ -128,30 +153,9 @@ async function verifyFacilityMflMatchesEtlSiteCode(
     );
   }
 
-  // Verify ETL facility siteCode
-  const etlConn = await mysql.createConnection({
-    host: cfg.host,
-    port: cfg.port,
-    user: cfg.user,
-    password: cfg.password,
-    database: "kenyaemr_etl"
-  });
-  const [etlRows] = await etlConn.query(
-    "SELECT siteCode FROM etl_default_facility_info LIMIT 1;"
+  log.push(
+    `Facility verification OK (core-source mode): openmrs.facility.mflcode=${rawExpected}, openmrs.facilityName=${expectedFacilityName ?? "unknown"}`
   );
-  await etlConn.end();
-
-  const etlValue = Array.isArray(etlRows) && etlRows.length ? String((etlRows[0] as any)?.siteCode ?? "").trim() : "";
-  if (!etlValue) {
-    throw new Error("verifyFacilityMflMatchesEtlSiteCode: kenyaemr_etl.etl_default_facility_info.siteCode is empty/missing");
-  }
-  if (etlValue !== rawExpected) {
-    throw new Error(
-      `verifyFacilityMflMatchesEtlSiteCode: etl_default_facility_info.siteCode mismatch expected=${rawExpected} actual=${etlValue}`
-    );
-  }
-
-  log.push(`Facility verification OK: openmrs.facility.mflcode=${rawExpected}, etl.siteCode=${etlValue}`);
 }
 
 async function getCaseSurveillanceGlobals(openmrsDbName: string) {
@@ -173,7 +177,11 @@ async function getCaseSurveillanceGlobals(openmrsDbName: string) {
         "'case.surveillance.client.secret'," +
         "'caseSurveillance.lastFetchDateAndTime'," +
         "'kenyaemr.version'," +
-        "'facility.mflcode'" +
+        "'kenyaemr.defaultLocation'," +
+        "'facility.mflcode'," +
+        "'facility.name'," +
+        "'facility.reporting.name'," +
+        "'facilityName'" +
         ");"
     );
 
@@ -192,6 +200,8 @@ async function getCaseSurveillanceGlobals(openmrsDbName: string) {
 export async function POST(req: Request) {
   const log: string[] = [];
   try {
+    const pushLock = await acquireDbNamedLock("cbs:case_surveillance:etl_build_push", 120);
+    try {
     const correlationId = randomUUID();
     const body = (await req.json().catch(() => ({}))) as {
       openmrsDbNameOverride?: string;
@@ -204,11 +214,13 @@ export async function POST(req: Request) {
       maxEligibleForVl?: number;
       maxHeiAt6to8Weeks?: number;
       includeEventTypes?: string[];
+      forcePushIfUnchanged?: boolean;
     };
 
     const openmrsDbName = (body.openmrsDbNameOverride || "").trim() || "openmrs";
     const facilityCodeOverride = body.facilityCodeOverride?.trim() || null;
     const versionOverride = body.versionOverride?.trim() || null;
+    const forcePushIfUnchanged = Boolean(body.forcePushIfUnchanged);
     // Critical safety: always refresh ETL before pushing case-surveillance.
     // This prevents stale ETL outputs (facility A) from being mislabeled as the newly requested facility (facility B).
     // The UI may still send `skipEtlRefresh`, but the server will ignore it.
@@ -278,6 +290,16 @@ export async function POST(req: Request) {
     let csFetchDate = globals["caseSurveillance.lastFetchDateAndTime"];
     let emrVersion = globals["kenyaemr.version"];
     let facilityMflFromDb = globals["facility.mflcode"];
+    const facilityNameFromDb =
+      globals["facility.name"] ||
+      globals["facility.reporting.name"] ||
+      globals["facilityName"] ||
+      null;
+    const facilityLocationId = (() => {
+      const raw = globals["kenyaemr.defaultLocation"];
+      const n = raw == null ? null : Number(raw);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })();
 
     // Facility mismatch protection:
     // If caller requested facilityCodeOverride, but the OpenMRS dump still has
@@ -315,7 +337,22 @@ export async function POST(req: Request) {
     const versionFinal = versionOverride || emrVersion || "UNKNOWN";
     const timestamp = formatTimestamp(new Date());
 
-    await verifyFacilityMflMatchesEtlSiteCode(openmrsDbName, facilityCodeFinal, log);
+    await verifyFacilityMflMatchesEtlSiteCode(
+      openmrsDbName,
+      facilityCodeFinal,
+      facilityNameFromDb,
+      log
+    );
+    if (facilityLocationId == null) {
+      throw new Error(
+        `Case surveillance gating failed: kenyaemr.defaultLocation missing/invalid in openmrsDbName='${openmrsDbName}' (mfl=${facilityCodeFinal}).`
+      );
+    }
+    log.push(
+      `Case DB context: facilityName=${facilityNameFromDb || "UNKNOWN"} facilityMfl=${String(
+        facilityMflFromDb ?? ""
+      ) || "UNKNOWN"} selectedMfl=${facilityCodeFinal}`
+    );
 
     // Case surveillance expects a JSON array of EventBase objects created by IL
     // (see `mapToDatasetStructure` and `generateCaseSurveillancePayload`).
@@ -342,6 +379,7 @@ export async function POST(req: Request) {
     let builtDistinctPatientCounts: Record<string, number> = {};
     let builtMinCreatedAt: string | null = null;
     let builtMaxCreatedAt: string | null = null;
+    let payloadFingerprint: string | null = null;
     if (includeEventTypes.has("roll_call")) {
       eventList.push({
         eventType: "roll_call",
@@ -350,44 +388,55 @@ export async function POST(req: Request) {
     }
 
     try {
-      log.push("Building case-surveillance events from kenyaemr_etl (ETL outputs)...");
+      log.push(
+        `Building case-surveillance events from OpenMRS core tables (facility-filtered)...`
+      );
+      log.push(
+        `Case facility filtering: facilityLocationId=${facilityLocationId} selectedMfl=${facilityCodeFinal}`
+      );
 
       if (includeEventTypes.has("new_case")) {
         const [newCaseRows] = await etlConn.query(
         `
         SELECT
-          t.patient_id AS patientPk,
+          pos.patient_id AS patientPk,
           addr.county AS county,
           addr.sub_county AS subCounty,
           addr.ward AS ward,
-          demo.Gender AS sex,
-          DATE_FORMAT(demo.DOB, '%Y-%m-%d') AS dob,
-          DATE_FORMAT(t.date_created, '%Y-%m-%d %H:%i:%s') AS createdAt,
-          DATE_FORMAT(COALESCE(t.date_last_modified, t.date_created), '%Y-%m-%d %H:%i:%s') AS updatedAt,
-          DATE_FORMAT(t.date_created, '%Y-%m-%d %H:%i:%s') AS positiveHivTestDate
+          p.gender AS sex,
+          DATE_FORMAT(p.birthdate, '%Y-%m-%d') AS dob,
+          DATE_FORMAT(pos.positive_date, '%Y-%m-%d %H:%i:%s') AS createdAt,
+          DATE_FORMAT(COALESCE(p.date_changed, pos.positive_date), '%Y-%m-%d %H:%i:%s') AS updatedAt,
+          DATE_FORMAT(pos.positive_date, '%Y-%m-%d %H:%i:%s') AS positiveHivTestDate
         FROM (
-          SELECT patient_id, MAX(date_created) AS date_created
-          FROM etl_hts_test
-          WHERE (voided = 0 OR voided IS NULL)
-            AND final_test_result = 'Positive'
+          SELECT
+            e.patient_id,
+            MAX(COALESCE(o.obs_datetime, e.encounter_datetime)) AS positive_date
+          FROM encounter e
+          INNER JOIN obs o ON o.encounter_id = e.encounter_id
+          WHERE e.voided = 0
+            AND o.voided = 0
+            AND o.concept_id = 159427
+            AND o.value_coded = 703
+            AND e.location_id = ?
           GROUP BY patient_id
         ) pos
-        INNER JOIN etl_hts_test t
-          ON t.patient_id = pos.patient_id AND t.date_created = pos.date_created
-        INNER JOIN etl_patient_demographics demo
-          ON demo.patient_id = t.patient_id
+        INNER JOIN person p
+          ON p.person_id = pos.patient_id
         LEFT JOIN (
           SELECT
-            patient_id,
-            MAX(county) AS county,
-            MAX(sub_county) AS sub_county,
-            MAX(ward) AS ward
-          FROM etl_person_address
-          WHERE (voided = 0 OR voided IS NULL)
-          GROUP BY patient_id
+            person_id,
+            MAX(county_district) AS county,
+            MAX(address4) AS sub_county,
+            MAX(city_village) AS ward
+          FROM person_address
+          WHERE voided = 0
+          GROUP BY person_id
         ) addr
-          ON addr.patient_id = t.patient_id
+          ON addr.person_id = pos.patient_id
         `
+        ,
+        [facilityLocationId]
         );
 
         const newCaseArr = (Array.isArray(newCaseRows) ? newCaseRows : []) as any[];
@@ -427,28 +476,51 @@ export async function POST(req: Request) {
           addr.county AS county,
           addr.sub_county AS subCounty,
           addr.ward AS ward,
-          demo.Gender AS sex,
-          DATE_FORMAT(demo.DOB, '%Y-%m-%d') AS dob,
-          DATE_FORMAT(COALESCE(e.date_created, e.date_started_art_at_transferring_facility), '%Y-%m-%d %H:%i:%s') AS createdAt,
-          DATE_FORMAT(COALESCE(e.date_last_modified, e.date_started_art_at_transferring_facility), '%Y-%m-%d %H:%i:%s') AS updatedAt,
-          DATE_FORMAT(e.date_started_art_at_transferring_facility, '%Y-%m-%d') AS artStartDate
-        FROM etl_hiv_enrollment e
-        INNER JOIN etl_patient_demographics demo
-          ON demo.patient_id = e.patient_id
+          p.gender AS sex,
+          DATE_FORMAT(p.birthdate, '%Y-%m-%d') AS dob,
+          DATE_FORMAT(e.encounter_datetime, '%Y-%m-%d %H:%i:%s') AS createdAt,
+          DATE_FORMAT(COALESCE(e.date_changed, e.encounter_datetime), '%Y-%m-%d %H:%i:%s') AS updatedAt,
+          DATE_FORMAT(MAX(o_transfer_date.value_datetime), '%Y-%m-%d') AS artStartDate
+        FROM encounter e
+        INNER JOIN encounter_type et
+          ON et.encounter_type_id = e.encounter_type
+        INNER JOIN person p
+          ON p.person_id = e.patient_id
+        LEFT JOIN obs o_transfer
+          ON o_transfer.encounter_id = e.encounter_id
+          AND o_transfer.voided = 0
+          AND o_transfer.concept_id = 160563
+        LEFT JOIN obs o_transfer_date
+          ON o_transfer_date.encounter_id = e.encounter_id
+          AND o_transfer_date.voided = 0
+          AND o_transfer_date.concept_id = 160534
         LEFT JOIN (
           SELECT
-            patient_id,
-            MAX(county) AS county,
-            MAX(sub_county) AS sub_county,
-            MAX(ward) AS ward
-          FROM etl_person_address
-          WHERE (voided = 0 OR voided IS NULL)
-          GROUP BY patient_id
+            person_id,
+            MAX(county_district) AS county,
+            MAX(address4) AS sub_county,
+            MAX(city_village) AS ward
+          FROM person_address
+          WHERE voided = 0
+          GROUP BY person_id
         ) addr
-          ON addr.patient_id = e.patient_id
-        WHERE (e.voided = 0 OR e.voided IS NULL)
-          AND e.date_started_art_at_transferring_facility IS NOT NULL
+          ON addr.person_id = e.patient_id
+        WHERE e.voided = 0
+          AND e.location_id = ?
+          AND et.name = 'HIV Enrollment'
+          AND (o_transfer.obs_id IS NOT NULL OR o_transfer_date.obs_id IS NOT NULL)
+        GROUP BY
+          e.patient_id,
+          addr.county,
+          addr.sub_county,
+          addr.ward,
+          p.gender,
+          p.birthdate,
+          e.encounter_datetime,
+          e.date_changed
         `
+        ,
+        [facilityLocationId]
         );
 
         const linkedCaseArr = (Array.isArray(linkedCaseRows) ? linkedCaseRows : []) as any[];
@@ -646,42 +718,61 @@ export async function POST(req: Request) {
         const [heiAt6to8Rows] = await etlConn.query(
       `
       SELECT
-        h.patient_id AS patientPk,
+        e.patient_id AS patientPk,
         addr.county AS county,
         addr.sub_county AS subCounty,
         addr.ward AS ward,
-        demo.Gender AS sex,
-        DATE_FORMAT(demo.DOB, '%Y-%m-%d') AS dob,
-        DATE_FORMAT(h.date_created, '%Y-%m-%d %H:%i:%s') AS createdAt,
-        DATE_FORMAT(COALESCE(h.date_last_modified, h.date_created), '%Y-%m-%d %H:%i:%s') AS updatedAt,
-        demo.hei_no AS heiId
-      FROM etl_hei_follow_up_visit h
-      INNER JOIN etl_patient_demographics demo
-        ON demo.patient_id = h.patient_id
+        p.gender AS sex,
+        DATE_FORMAT(p.birthdate, '%Y-%m-%d') AS dob,
+        DATE_FORMAT(e.encounter_datetime, '%Y-%m-%d %H:%i:%s') AS createdAt,
+        DATE_FORMAT(COALESCE(e.date_changed, e.encounter_datetime), '%Y-%m-%d %H:%i:%s') AS updatedAt,
+        hei.hei_id AS heiId
+      FROM encounter e
+      INNER JOIN encounter_type et
+        ON et.encounter_type_id = e.encounter_type
+      INNER JOIN person p
+        ON p.person_id = e.patient_id
       LEFT JOIN (
         SELECT
-          patient_id,
-          MAX(county) AS county,
-          MAX(sub_county) AS sub_county,
-          MAX(ward) AS ward
-        FROM etl_person_address
-        WHERE (voided = 0 OR voided IS NULL)
-        GROUP BY patient_id
+          pi.patient_id,
+          MAX(pi.identifier) AS hei_id
+        FROM patient_identifier pi
+        INNER JOIN patient_identifier_type pit
+          ON pit.patient_identifier_type_id = pi.identifier_type
+        WHERE pi.voided = 0
+          AND pit.retired = 0
+          AND pit.name = 'HEI ID Number'
+        GROUP BY pi.patient_id
+      ) hei
+        ON hei.patient_id = e.patient_id
+      LEFT JOIN (
+        SELECT
+          person_id,
+          MAX(county_district) AS county,
+          MAX(address4) AS sub_county,
+          MAX(city_village) AS ward
+        FROM person_address
+        WHERE voided = 0
+        GROUP BY person_id
       ) addr
-        ON addr.patient_id = h.patient_id
-      -- EMR dashboard "HEI at 6-8 weeks" is based on age at visit:
-      -- 6-8 weeks = 42-56 days using child's DOB from etl_patient_demographics.
-      WHERE h.visit_date IS NOT NULL
-        AND demo.DOB IS NOT NULL
-        AND DATEDIFF(h.visit_date, demo.DOB) BETWEEN 42 AND 56;
+        ON addr.person_id = e.patient_id
+      WHERE e.voided = 0
+        AND e.location_id = ?
+        AND et.name IN ('CWC Consultation', 'MCH Child Immunization')
+        AND p.birthdate IS NOT NULL
+        AND TIMESTAMPDIFF(DAY, p.birthdate, DATE(e.encounter_datetime)) BETWEEN 42 AND 56;
       `
+        ,
+        [facilityLocationId]
         );
 
         const heiAt6to8Arr = (Array.isArray(heiAt6to8Rows) ? heiAt6to8Rows : []) as any[];
+        const heiAt6to8WithHeiId = heiAt6to8Arr.filter((r) => String(r?.heiId ?? "").trim().length > 0);
+        const skippedHeiAt6to8MissingHeiId = heiAt6to8Arr.length - heiAt6to8WithHeiId.length;
         const heiAt6to8ArrLimited =
-          maxHeiAt6to8Weeks > 0 ? heiAt6to8Arr.slice(0, maxHeiAt6to8Weeks) : heiAt6to8Arr;
+          maxHeiAt6to8Weeks > 0 ? heiAt6to8WithHeiId.slice(0, maxHeiAt6to8Weeks) : heiAt6to8WithHeiId;
         log.push(
-          `Case event building: hei_at_6_to_8_weeks candidates=${heiAt6to8Arr.length}, sent=${heiAt6to8ArrLimited.length} (maxHeiAt6to8Weeks=${maxHeiAt6to8Weeks})`
+          `Case event building: hei_at_6_to_8_weeks candidates=${heiAt6to8Arr.length}, validWithHeiId=${heiAt6to8WithHeiId.length}, skippedMissingHeiId=${skippedHeiAt6to8MissingHeiId}, sent=${heiAt6to8ArrLimited.length} (maxHeiAt6to8Weeks=${maxHeiAt6to8Weeks})`
         );
 
         for (const r of heiAt6to8ArrLimited) {
@@ -834,6 +925,13 @@ export async function POST(req: Request) {
 
     log.push(`Case-surveillance responded HTTP ${lastStatus} (ok=${ok})`);
 
+    if (ok && payloadFingerprint) {
+      await saveFingerprint({
+        pushType: "case_surveillance",
+        facilityCode: facilityCodeFinal,
+        fingerprint: payloadFingerprint
+      });
+    }
     return NextResponse.json(
       {
         ok,
@@ -857,17 +955,22 @@ export async function POST(req: Request) {
             hei_at_6_to_8_weeks: "age_window_snapshot"
           },
           facilityCodeFinal,
+          facilityNameFromDb,
           versionFinal,
           includeEventTypes: Array.from(includeEventTypes),
           eventTypeCounts: builtEventTypeCounts,
           distinctPatientCounts: builtDistinctPatientCounts,
-          createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt }
+          createdAtRange: { min: builtMinCreatedAt, max: builtMaxCreatedAt },
+          payloadFingerprint
         },
         cbsStatus: lastStatus,
         cbsBody: lastBody
       },
       { status: ok ? 200 : 502 }
     );
+    } finally {
+      await pushLock.release();
+    }
   } catch (err) {
     return NextResponse.json(
       {
